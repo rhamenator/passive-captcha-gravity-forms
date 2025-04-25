@@ -1,7 +1,7 @@
 # Passive CAPTCHA Hardened for Gravity Forms (Multisite Ready)
 
 **Version:** 3.0
-**Author:** Your Name
+**Author:** Rich Hamilton 
 **Requires at least:** 5.0 (Assumed based on modern WP functions used)
 **Tested up to:** (Specify latest tested WP version)
 **License:** GPLv2 or later

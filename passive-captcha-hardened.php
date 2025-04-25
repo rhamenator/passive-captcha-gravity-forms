@@ -3,7 +3,8 @@
  * Plugin Name: Passive CAPTCHA Hardened for Gravity Forms (Multisite Ready)
  * Description: Passive CAPTCHA with timing, nonce, JA3 fingerprinting, webhook escalation, multi-site support, and automated tests.
  * Version: 3.0
- * Author: Your Name
+ * Author: Rich Hamilton
+ * Author URI: https:\\www.github.com\rhamenator
  * Network: true
  */
 
@@ -81,22 +82,26 @@ function pch_send_webhook($payload) {
 // Validation logic for Gravity Forms
 add_filter('gform_pre_validation', 'pch_validate_passive_captcha');
 function pch_validate_passive_captcha($form) {
-    $ip = $_SERVER['REMOTE_ADDR'];
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1'; // Use default IP if not set
+    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';   // Get User Agent
+
+    // --- JA3 Fingerprint Retrieval ---
     // Retrieve JA3 fingerprint header sent by NGINX/webserver
     // Ensure your webserver configuration (like the NGINX+Lua setup discussed)
     // correctly sets this header, e.g., 'HTTP_X_JA3_FINGERPRINT'
-    $ja3_header_key = 'HTTP_X_JA3_FINGERPRINT'; // Adjust if your NGINX uses a different key
-    $ja3_fingerprint = $_SERVER[$ja3_header_key] ?? '';
+    $ja3_header_key = 'HTTP_X_JA3_FINGERPRINT'; // Adjust if your server uses a different key
+    $ja3_fingerprint = $_SERVER[$ja3_header_key] ?? ''; // Get header if it exists, otherwise empty string
 
     foreach ($form['fields'] as &$field) {
-        if ($field->type === 'hidden' && strpos($field->label, 'CAPTCHA Token') !== false) {
+        // Find the hidden field labelled 'CAPTCHA Token'
+        if ($field->type === 'hidden' && isset($field->label) && strpos($field->label, 'CAPTCHA Token') !== false) {
 
             // --- IP Blacklist Check ---
             if (pch_is_ip_blacklisted($ip)) {
                 $field->failed_validation = true;
-                $field->validation_message = 'Your IP is blacklisted.';
-                // Note: Consider sending a webhook here too if desired
-                continue;
+                $field->validation_message = __('Your IP is blacklisted.', 'passive-captcha-hardened');
+                // Optional: Send webhook here if desired
+                continue; // Skip other checks for this field
             }
 
             // --- IP Whitelist Check ---
@@ -105,34 +110,42 @@ function pch_validate_passive_captcha($form) {
                 continue;
             }
 
-            // --- JA3 Fingerprint Check (New) ---
-            // Check if the JA3 fingerprint header is missing or suspiciously short.
-            // You might enhance this check based on known bad fingerprints if needed.
-            if (empty($ja3_fingerprint) || strlen($ja3_fingerprint) < 10) { // Check length as per chat example [cite: 145]
-                 $field->failed_validation = true;
-                 $field->validation_message = 'Security validation failed (JA3).'; // User-friendly message
-                 pch_register_failure($ip);
-                 pch_send_webhook([ // Send webhook as per chat example [cite: 146]
-                     'event' => 'ja3_missing_or_invalid',
-                     'ip' => $ip,
-                     'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
-                     'ja3' => $ja3_fingerprint, // Include the received (or empty) JA3
-                     'timestamp' => time(),
-                     'form_id' => $form['id'], // Add form ID for context
-                 ]);
-                 continue; // Stop further checks for this field
+            // --- Conditional JA3 Fingerprint Check (Modified) ---
+            // Only perform the check if the JA3 fingerprint header is NOT empty.
+            // If the header is empty (e.g., server not configured), skip this specific check.
+            if (!empty($ja3_fingerprint)) {
+                // The header exists, now check if it's potentially invalid (e.g., too short)
+                // You could add more sophisticated checks here later if needed (e.g., known bad fingerprints)
+                $min_ja3_len = 10; // Minimum plausible length for a JA3 hash
+                if (strlen($ja3_fingerprint) < $min_ja3_len) {
+                     $field->failed_validation = true;
+                     $field->validation_message = __('Security validation failed (JA3 Format).', 'passive-captcha-hardened'); // Adjusted message
+                     pch_register_failure($ip);
+                     pch_send_webhook([
+                         'event' => 'ja3_invalid_format', // More specific event
+                         'ip' => $ip,
+                         'user_agent' => $ua,
+                         'ja3' => $ja3_fingerprint,
+                         'timestamp' => time(),
+                         'form_id' => $form['id'] ?? 'N/A', // Include form ID if available
+                     ]);
+                     continue; // Stop further checks for this field
+                }
+                // If JA3 header exists and has minimum length, it passes this basic check.
             }
+            // --- End Conditional JA3 Check ---
 
 
             // --- Rate Limit Check ---
             if (pch_check_rate_limit($ip)) {
                 $field->failed_validation = true;
-                $field->validation_message = 'Access temporarily blocked.';
+                $field->validation_message = __('Access temporarily blocked.', 'passive-captcha-hardened');
                 // Webhook for submissions after ban is handled by pch_after_submission_alert
                 continue;
             }
 
             // --- Retrieve Submitted Values ---
+            // Use rgpost() for Gravity Forms context
             $submitted_value = rgpost('input_' . $field->id);
             $submitted_nonce = rgpost('pch_nonce');
             $submitted_session = rgpost('pch_session');
@@ -141,72 +154,79 @@ function pch_validate_passive_captcha($form) {
             // --- Nonce Verification ---
             if (!wp_verify_nonce($submitted_nonce, 'pch_captcha_nonce')) {
                 $field->failed_validation = true;
-                $field->validation_message = 'Security check failed (nonce).';
+                $field->validation_message = __('Security check failed (Code: N).', 'passive-captcha-hardened');
                 pch_register_failure($ip);
-                // Consider sending webhook for nonce failure too
+                // Optional: Send webhook for nonce failure
                 continue;
             }
 
             // --- Session Token Verification ---
-            if (!$submitted_session || !get_transient('pch_' . $submitted_session)) {
+            $session_transient_key = 'pch_' . $submitted_session;
+            if (empty($submitted_session) || !get_transient($session_transient_key)) {
                 $field->failed_validation = true;
-                $field->validation_message = 'Session expired.';
-                // Ensure transient is deleted even if it exists but other checks fail later
-                if ($submitted_session) {
-                    delete_transient('pch_' . $submitted_session);
-                }
+                $field->validation_message = __('Session expired (Code: S).', 'passive-captcha-hardened');
+                if ($submitted_session) delete_transient($session_transient_key); // Clean up if exists
                 pch_register_failure($ip);
-                 // Consider sending webhook for session failure
+                // Optional: Send webhook for session failure
                 continue;
             }
-            // Delete the transient *after* all checks pass for this attempt,
-            // or definitely delete if validation fails here.
-            delete_transient('pch_' . $submitted_session);
-
 
             // --- IP/User-Agent Hash Verification ---
-            if ($submitted_iphash !== sha1($ip . ($_SERVER['HTTP_USER_AGENT'] ?? ''))) {
+            $expected_iphash = sha1($ip . $ua);
+            if ($submitted_iphash !== $expected_iphash) {
                 $field->failed_validation = true;
-                $field->validation_message = 'IP/User-Agent mismatch.';
+                $field->validation_message = __('Security check failed (Code: M).', 'passive-captcha-hardened');
+                delete_transient($session_transient_key); // Delete transient on failure
                 pch_register_failure($ip);
-                // Consider sending webhook for IP/UA mismatch
+                // Optional: Send webhook for IP/UA mismatch
                 continue;
             }
 
             // --- Interaction / JS Execution Check ---
             if (empty($submitted_value) || $submitted_value === 'no_interaction') {
                 $field->failed_validation = true;
-                $field->validation_message = 'Bot verification failed.';
+                $field->validation_message = __('Bot verification failed (Code: I).', 'passive-captcha-hardened');
+                delete_transient($session_transient_key); // Delete transient on failure
                 pch_register_failure($ip);
-                // Consider sending webhook for interaction failure
+                // Optional: Send webhook for interaction failure
                 continue;
             }
 
             // --- Token Decoding and Basic Format Check ---
-            $decoded = base64_decode($submitted_value);
-            if (!$decoded || strpos($decoded, ':') === false) {
+            $decoded = base64_decode($submitted_value, true); // Use strict decoding
+            if ($decoded === false || strpos($decoded, ':') === false) {
                 $field->failed_validation = true;
-                $field->validation_message = 'Invalid CAPTCHA token.';
+                $field->validation_message = __('Invalid CAPTCHA token (Code: F).', 'passive-captcha-hardened');
+                delete_transient($session_transient_key); // Delete transient on failure
                 pch_register_failure($ip);
-                 // Consider sending webhook for invalid token format
+                // Optional: Send webhook for invalid token format
                 continue;
             }
 
             // --- Token Content Verification (Timing & Fingerprint Hash) ---
-            list($timeSpent, $navigatorHash) = explode(':', $decoded, 2); // Limit split to 2 parts
-            if (!is_numeric($timeSpent) || $timeSpent < 3000 || strlen($navigatorHash) < 10) { // Ensure timeSpent is numeric
+            list($timeSpent, $navigatorHash) = explode(':', $decoded, 2); // Limit split
+            $min_time = 3000; // Configurable?
+            $min_hash_len = 10; // Configurable?
+            if (!is_numeric($timeSpent) || $timeSpent < $min_time || strlen($navigatorHash) < $min_hash_len) {
                 $field->failed_validation = true;
-                $field->validation_message = 'Suspicious timing or fingerprint mismatch.';
+                $field->validation_message = __('Security check failed (Code: T/H).', 'passive-captcha-hardened');
+                delete_transient($session_transient_key); // Delete transient on failure
                 pch_register_failure($ip);
-                 // Consider sending webhook for timing/fingerprint failure
+                // Optional: Send webhook for timing/fingerprint failure
                 continue;
             }
 
-            // If we reach here, all checks passed for this field
+            // --- ALL CHECKS PASSED for this field ---
+            delete_transient($session_transient_key); // Delete the used session transient *only* on full success
+
+            // Since checks passed for the CAPTCHA field, we can break the loop
+            // if we assume only one such field per form. If multiple are possible, remove break.
+            break;
         }
     }
-    return $form;
+    return $form; // Return the potentially modified form object
 }
+
 // Submission escalation hook
 add_action('gform_after_submission', 'pch_after_submission_alert', 10, 2);
 function pch_after_submission_alert($entry, $form) {
