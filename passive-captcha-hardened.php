@@ -13,141 +13,404 @@ if (!defined('ABSPATH')) {
 }
 
 // --- Core Helper Functions ---
-// pch_get_option, pch_update_option, pch_log_event, pch_get_visitor_ip - remain the same
-function pch_get_option($option, $default = '') { return is_multisite() ? get_site_option($option, $default) : get_option($option, $default); }
-function pch_update_option($option, $value) { return is_multisite() ? update_site_option($option, $value) : update_option($option, $value); }
-function pch_log_event($message) { error_log("[Passive CAPTCHA] " . $message); $log_option_key = 'pch_recent_logs'; $max_log_entries = 50; $logs = is_multisite() ? get_site_option($log_option_key, []) : get_option($log_option_key, []); if (!is_array($logs)) { $logs = []; } $timestamp = current_time('mysql'); array_unshift($logs, "[$timestamp] " . $message); if (count($logs) > $max_log_entries) { $logs = array_slice($logs, 0, $max_log_entries); } if (is_multisite()) { update_site_option($log_option_key, $logs); } else { update_option($log_option_key, $logs, false); } }
-function pch_get_visitor_ip() { $custom_header_key_raw = pch_get_option('pch_custom_ip_header', ''); $custom_header_key = preg_replace('/[^A-Z0-9_\-]/', '', strtoupper($custom_header_key_raw)); $ip_headers = []; if (!empty($custom_header_key)) { $ip_headers[] = $custom_header_key; } $ip_headers = array_merge($ip_headers, [ 'HTTP_CF_CONNECTING_IP', 'HTTP_X_REAL_IP', 'HTTP_CLIENT_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR' ]); $ip_headers = array_unique($ip_headers); foreach ($ip_headers as $header) { if (!empty($_SERVER[$header])) { if ($header === 'HTTP_X_FORWARDED_FOR') { $ip_list = explode(',', $_SERVER[$header]); foreach ($ip_list as $ip_candidate) { $ip = trim($ip_candidate); if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) { return $ip; } if (filter_var(trim($ip_list[0]), FILTER_VALIDATE_IP)) { return trim($ip_list[0]); } } continue; } else { $ip = trim($_SERVER[$header]); } if (filter_var($ip, FILTER_VALIDATE_IP)) { return $ip; } } } return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1'; }
+
+/**
+ * Multi-site aware get_option wrapper.
+ */
+function pch_get_option($option, $default = '') {
+    // Ensure WordPress core functions are available
+    if (!function_exists('is_multisite')) {
+        require_once ABSPATH . 'wp-includes/load.php';
+    }
+    return is_multisite() ? get_site_option($option, $default) : get_option($option, $default);
+}
+
+/**
+ * Multi-site aware update_option wrapper.
+ */
+function pch_update_option($option, $value) {
+     if (!function_exists('is_multisite')) {
+        require_once ABSPATH . 'wp-includes/load.php';
+    }
+    // Use 'no' for autoload parameter in single site update_option for non-essential options like logs
+    $autoload = ($option === 'pch_recent_logs') ? 'no' : null; // null lets WP decide default ('yes')
+    return is_multisite() ? update_site_option($option, $value) : update_option($option, $value, $autoload);
+}
+
+/**
+ * Logs a message to both the PHP error log and a persistent WordPress option.
+ * Keeps a limited number of recent log entries.
+ *
+ * @param string $message The message to log.
+ */
+function pch_log_event($message) {
+    // 1. Log to standard PHP error log (if possible)
+    // Ensure basic WP functions are loaded if called early
+     if (!function_exists('current_time')) {
+        require_once ABSPATH . WPINC . '/functions.php';
+    }
+    error_log("[Passive CAPTCHA] " . $message);
+
+    // 2. Log to WordPress option
+    $log_option_key = 'pch_recent_logs';
+    $max_log_entries = 50; // Maximum number of entries to keep
+
+    // Get existing logs (use direct get_site_option/get_option to avoid recursion if pch_get_option uses logging)
+    $logs = is_multisite() ? get_site_option($log_option_key, []) : get_option($log_option_key, []);
+
+    // Ensure it's an array
+    if (!is_array($logs)) {
+        $logs = [];
+    }
+
+    // Add new entry with timestamp
+    $timestamp = current_time('mysql'); // WordPress localized time
+    // Sanitize message slightly before storing
+    $sanitized_message = wp_strip_all_tags($message);
+    array_unshift($logs, "[$timestamp] " . $sanitized_message); // Add to the beginning
+
+    // Trim logs if exceeding max entries
+    if (count($logs) > $max_log_entries) {
+        $logs = array_slice($logs, 0, $max_log_entries);
+    }
+
+    // Save back to options using our helper to handle single/multisite and autoload for logs
+    pch_update_option($log_option_key, $logs);
+}
+
+
+/**
+ * Helper function to get the visitor's real IP address, considering proxies.
+ * Checks common headers in a specific order, including a custom one from settings.
+ *
+ * @return string The determined IP address.
+ */
+function pch_get_visitor_ip() {
+    // Get custom header key from settings, sanitize it
+    $custom_header_key_raw = pch_get_option('pch_custom_ip_header', '');
+    // Basic sanitization: allow alphanumeric, underscore, hyphen.
+    $custom_header_key = preg_replace('/[^A-Z0-9_\-]/', '', strtoupper($custom_header_key_raw));
+    // Optionally prepend HTTP_ if it seems like a standard header name was entered without it
+    // if (!empty($custom_header_key) && strpos($custom_header_key, 'HTTP_') !== 0 && strpos($custom_header_key, 'REMOTE_') !== 0) {
+    //      $custom_header_key = 'HTTP_' . $custom_header_key;
+    // }
+
+    $ip_headers = [];
+    // Add custom header first if it's set and looks valid
+    if (!empty($custom_header_key)) {
+        $ip_headers[] = $custom_header_key;
+    }
+
+    // Add standard headers
+    $ip_headers = array_merge($ip_headers, [
+        'HTTP_CF_CONNECTING_IP', // Cloudflare
+        'HTTP_X_REAL_IP',        // Common Nginx proxy header
+        'HTTP_CLIENT_IP',
+        'HTTP_X_FORWARDED_FOR',  // Standard proxy header
+        'REMOTE_ADDR'            // Direct connection IP (fallback)
+    ]);
+
+    // Remove duplicates just in case custom header was a standard one
+    $ip_headers = array_unique($ip_headers);
+
+    foreach ($ip_headers as $header) {
+        if (!empty($_SERVER[$header])) {
+            // HTTP_X_FORWARDED_FOR can be a comma-separated list, take the first valid IP.
+            if ($header === 'HTTP_X_FORWARDED_FOR') {
+                $ip_list = explode(',', $_SERVER[$header]);
+                // Iterate through the list to find the first valid public IP
+                foreach ($ip_list as $ip_candidate) {
+                    $ip = trim($ip_candidate);
+                    // Validate the IP format (basic IPv4/IPv6 check) and ensure it's not a private/reserved IP if possible
+                    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                        return $ip; // Return first valid public IP
+                    }
+                     // If only private IPs are found, maybe take the first one anyway? Or fall through.
+                    // For simplicity here, we take the first one if it validates at all.
+                    if (filter_var(trim($ip_list[0]), FILTER_VALIDATE_IP)) {
+                       return trim($ip_list[0]);
+                    }
+                }
+                // If loop finishes without finding a valid public IP in XFF, continue to next header
+                continue;
+            } else {
+                 $ip = trim($_SERVER[$header]);
+            }
+
+            // Validate the IP format for other headers
+            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                return $ip;
+            }
+        }
+    }
+
+    // Default fallback
+    return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+}
+
 
 // --- Script Enqueueing ---
-// pch_enqueue_scripts - remains the same
-function pch_enqueue_scripts() { if (is_page() || is_singular()) { $token_nonce = wp_create_nonce('pch_captcha_nonce'); $session_token = bin2hex(random_bytes(16)); $visitor_ip = pch_get_visitor_ip(); $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? ''; $session_lifetime_seconds = (int) pch_get_option('pch_session_lifetime', 12 * HOUR_IN_SECONDS); if ($session_lifetime_seconds <= 0) { $session_lifetime_seconds = 12 * HOUR_IN_SECONDS; } set_transient('pch_' . $session_token, time(), $session_lifetime_seconds); wp_enqueue_script('passive-captcha-hardened', plugin_dir_url(__FILE__) . 'js/passive-captcha.js', [], '3.4', true); $enable_webgl = (bool) pch_get_option('pch_enable_webgl', true); $enable_math = (bool) pch_get_option('pch_enable_math', true); wp_localize_script('passive-captcha-hardened', 'pchData', [ 'nonce' => $token_nonce, 'sessionToken' => $session_token, 'ipHash' => sha1($visitor_ip . $user_agent), 'enableWebGL' => $enable_webgl, 'enableMath' => $enable_math, ]); } }
+
+/**
+ * Enqueue JS and localize data for the session.
+ */
+function pch_enqueue_scripts() {
+    // Load scripts on any page/post where a form might appear.
+    if (is_page() || is_singular()) { // Check if it's a single page or post
+        // Ensure core WP functions are available
+        if (!function_exists('wp_create_nonce') || !function_exists('bin2hex') || !function_exists('set_transient') || !function_exists('wp_enqueue_script') || !function_exists('wp_localize_script')) {
+             pch_log_event("Error: Core WordPress functions missing during script enqueue.");
+             return;
+        }
+
+        $token_nonce = wp_create_nonce('pch_captcha_nonce');
+        $session_token = bin2hex(random_bytes(16));
+        $visitor_ip = pch_get_visitor_ip();
+        $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+
+        // Get session lifetime from settings (default 12 hours)
+        $session_lifetime_seconds = (int) pch_get_option('pch_session_lifetime', 12 * HOUR_IN_SECONDS);
+        if ($session_lifetime_seconds <= 0) { $session_lifetime_seconds = 12 * HOUR_IN_SECONDS; }
+        set_transient('pch_' . $session_token, time(), $session_lifetime_seconds);
+
+        wp_enqueue_script('passive-captcha-hardened', plugin_dir_url(__FILE__) . 'js/passive-captcha.js', [], '3.4', true); // Version match
+
+        // Get flags for JS checks from settings
+        $enable_webgl = (bool) pch_get_option('pch_enable_webgl', true);
+        $enable_math = (bool) pch_get_option('pch_enable_math', true);
+
+        wp_localize_script('passive-captcha-hardened', 'pchData', [
+            'nonce' => $token_nonce,
+            'sessionToken' => $session_token,
+            'ipHash' => sha1($visitor_ip . $user_agent),
+            'enableWebGL' => $enable_webgl, // Pass flag to JS
+            'enableMath' => $enable_math,   // Pass flag to JS
+        ]);
+    }
+}
 add_action('wp_enqueue_scripts', 'pch_enqueue_scripts');
 
+
 // --- Rate limiting helpers ---
-// pch_check_rate_limit, pch_register_failure - remain the same
 function pch_check_rate_limit($ip) { $limit = (int) pch_get_option('pch_rate_limit_threshold', 5); $ban_duration = (int) pch_get_option('pch_ban_duration', 3600); if ($limit <= 0) return false; $key = 'pch_fail_' . md5($ip); $fails = (int) get_transient($key); return $fails >= $limit; }
 function pch_register_failure($ip) { $ban_duration = (int) pch_get_option('pch_ban_duration', 3600); if ($ban_duration <= 0) return; $key = 'pch_fail_' . md5($ip); $fails = (int) get_transient($key); set_transient($key, $fails + 1, $ban_duration); }
 
 // --- IP whitelist/blacklist helpers ---
-// pch_is_ip_whitelisted, pch_is_ip_blacklisted - remain the same
 function pch_is_ip_whitelisted($ip) { $list = pch_get_option('pch_ip_whitelist', ''); if (empty($list)) return false; $ips = array_filter(array_map('trim', explode("\n", $list))); return in_array($ip, $ips); }
 function pch_is_ip_blacklisted($ip) { $list = pch_get_option('pch_ip_blacklist', ''); if (empty($list)) return false; $ips = array_filter(array_map('trim', explode("\n", $list))); return in_array($ip, $ips); }
 
 // --- Webhook with HMAC signing ---
-// pch_send_webhook - remains the same
 function pch_send_webhook($payload) { $url = pch_get_option('pch_webhook_url'); $key = pch_get_option('pch_webhook_hmac_key'); if (empty($url) || empty($key)) { return; } if (!is_array($payload)) { $payload = ['error' => 'Invalid webhook payload type']; } $body = wp_json_encode($payload); if ($body === false) { return; } $hmac = hash_hmac('sha256', $body, $key); wp_remote_post($url, [ 'timeout' => 10, 'headers' => [ 'Content-Type' => 'application/json', 'X-Signature' => $hmac ], 'body' => $body, 'sslverify' => true ]); }
 
+
 // --- Validation logic for Gravity Forms ---
-// pch_validate_passive_captcha - remains the same (uses pch_log_event now)
+
 add_filter('gform_pre_validation', 'pch_validate_passive_captcha');
+/**
+ * Validates the passive CAPTCHA during Gravity Forms submission (Improved).
+ */
 function pch_validate_passive_captcha($form) {
-    $ip = pch_get_visitor_ip(); $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    // Ensure Gravity Forms functions are available if needed
+    if (!function_exists('rgpost')) {
+         pch_log_event("GF Error: rgpost function not found during validation.");
+         // Potentially mark all fields as failed or return form as is?
+         // For now, let's assume it exists if this hook runs.
+    }
+
+    $ip = pch_get_visitor_ip();
+    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
     $user_error_message = __('Security check failed. Please refresh the page and try again.', 'passive-captcha-hardened');
-    $ja3_header_key = 'HTTP_X_JA3_FINGERPRINT'; $ja3_fingerprint = $_SERVER[$ja3_header_key] ?? '';
-    $form_id = $form['id'] ?? 'N/A';
+    $ja3_header_key = 'HTTP_X_JA3_FINGERPRINT';
+    $ja3_fingerprint = $_SERVER[$ja3_header_key] ?? '';
+    $form_id = $form['id'] ?? 'N/A'; // Get form ID for logging
 
     foreach ($form['fields'] as &$field) {
+        // Find the hidden field labelled 'CAPTCHA Token'
         if ($field->type === 'hidden' && isset($field->label) && strpos($field->label, 'CAPTCHA Token') !== false) {
-            if (pch_is_ip_blacklisted($ip)) { $field->failed_validation = true; $field->validation_message = __('Your IP is blacklisted.', 'passive-captcha-hardened'); pch_log_event("GF Failure: IP Blacklisted. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}"); continue; }
+
+            // --- IP Blacklist Check ---
+            if (pch_is_ip_blacklisted($ip)) {
+                $field->failed_validation = true; $field->validation_message = __('Your IP is blacklisted.', 'passive-captcha-hardened');
+                pch_log_event("GF Failure: IP Blacklisted. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}");
+                continue;
+            }
+            // --- IP Whitelist Check ---
             if (pch_is_ip_whitelisted($ip)) { continue; }
-            if (!empty($ja3_fingerprint)) { $min_ja3_len = 10; if (strlen($ja3_fingerprint) < $min_ja3_len) { $field->failed_validation = true; $field->validation_message = $user_error_message; pch_register_failure($ip); pch_log_event("GF Failure: JA3 Invalid Format. IP: {$ip}, UA: {$ua}, JA3: {$ja3_fingerprint}, Form ID: {$form_id}"); pch_send_webhook(['event' => 'ja3_invalid_format', 'ip' => $ip, 'user_agent' => $ua, 'ja3' => $ja3_fingerprint, 'timestamp' => time(), 'form_id' => $form_id]); continue; } }
-            if (pch_check_rate_limit($ip)) { $field->failed_validation = true; $field->validation_message = __('Access temporarily blocked due to high activity.', 'passive-captcha-hardened'); pch_log_event("GF Failure: Rate Limit Exceeded. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}"); continue; }
-            $submitted_value = rgpost('input_' . $field->id); $submitted_nonce = rgpost('pch_nonce'); $submitted_session = rgpost('pch_session'); $submitted_iphash = rgpost('pch_iphash');
-            if (!wp_verify_nonce($submitted_nonce, 'pch_captcha_nonce')) { $field->failed_validation = true; $field->validation_message = $user_error_message; pch_register_failure($ip); pch_log_event("GF Failure: Nonce Invalid. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}"); continue; }
-            $session_transient_key = 'pch_' . $submitted_session; if (empty($submitted_session) || !get_transient($session_transient_key)) { $field->failed_validation = true; $field->validation_message = $user_error_message; if ($submitted_session) delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: Session Invalid/Expired. IP: {$ip}, UA: {$ua}, Session: {$submitted_session}, Form ID: {$form_id}"); continue; }
-            $expected_iphash = sha1($ip . $ua); if ($submitted_iphash !== $expected_iphash) { $field->failed_validation = true; $field->validation_message = $user_error_message; delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: IP/UA Mismatch. IP: {$ip}, UA: {$ua}, Submitted: {$submitted_iphash}, Expected: {$expected_iphash}, Form ID: {$form_id}"); continue; }
-            if (empty($submitted_value) || $submitted_value === 'no_interaction') { $field->failed_validation = true; $field->validation_message = $user_error_message; delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: No Interaction/JS Fail. IP: {$ip}, UA: {$ua}, Token: {$submitted_value}, Form ID: {$form_id}"); continue; }
-            $decoded = base64_decode($submitted_value, true); if ($decoded === false || strpos($decoded, ':') === false) { $field->failed_validation = true; $field->validation_message = $user_error_message; delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: Invalid Token Format. IP: {$ip}, UA: {$ua}, Token: {$submitted_value}, Form ID: {$form_id}"); continue; }
-            list($timeSpent, $navigatorHash) = explode(':', $decoded, 2); $min_time = (int) pch_get_option('pch_min_time_threshold', 3000); $min_hash_len = (int) pch_get_option('pch_min_hash_length', 10); if ($min_time <= 0) { $min_time = 3000; } if ($min_hash_len <= 0) { $min_hash_len = 10; }
-            if (!is_numeric($timeSpent) || $timeSpent < $min_time || strlen($navigatorHash) < $min_hash_len) { $field->failed_validation = true; $field->validation_message = $user_error_message; delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: Timing/Fingerprint Invalid. IP: {$ip}, UA: {$ua}, Time: {$timeSpent} (Min: {$min_time}), HashLen: " . strlen($navigatorHash) . " (Min: {$min_hash_len}), Form ID: {$form_id}"); continue; }
-            delete_transient($session_transient_key); break;
+
+            // --- Conditional JA3 Fingerprint Check ---
+            if (!empty($ja3_fingerprint)) {
+                $min_ja3_len = 10;
+                if (strlen($ja3_fingerprint) < $min_ja3_len) {
+                     $field->failed_validation = true; $field->validation_message = $user_error_message;
+                     pch_register_failure($ip);
+                     pch_log_event("GF Failure: JA3 Invalid Format. IP: {$ip}, UA: {$ua}, JA3: {$ja3_fingerprint}, Form ID: {$form_id}");
+                     pch_send_webhook(['event' => 'ja3_invalid_format', 'ip' => $ip, 'user_agent' => $ua, 'ja3' => $ja3_fingerprint, 'timestamp' => time(), 'form_id' => $form_id]);
+                     continue;
+                }
+            }
+
+            // --- Rate Limit Check ---
+            if (pch_check_rate_limit($ip)) {
+                $field->failed_validation = true; $field->validation_message = __('Access temporarily blocked due to high activity.', 'passive-captcha-hardened');
+                pch_log_event("GF Failure: Rate Limit Exceeded. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}");
+                continue;
+            }
+
+            // --- Retrieve Submitted Values ---
+            $submitted_value = rgpost('input_' . $field->id);
+            $submitted_nonce = rgpost('pch_nonce');
+            $submitted_session = rgpost('pch_session');
+            $submitted_iphash = rgpost('pch_iphash');
+
+            // --- Nonce Verification ---
+            if (!wp_verify_nonce($submitted_nonce, 'pch_captcha_nonce')) {
+                $field->failed_validation = true; $field->validation_message = $user_error_message;
+                pch_register_failure($ip); pch_log_event("GF Failure: Nonce Invalid. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}");
+                continue;
+            }
+
+            // --- Session Token Verification ---
+            $session_transient_key = 'pch_' . $submitted_session;
+            if (empty($submitted_session) || !get_transient($session_transient_key)) {
+                $field->failed_validation = true; $field->validation_message = $user_error_message;
+                if ($submitted_session) delete_transient($session_transient_key);
+                pch_register_failure($ip); pch_log_event("GF Failure: Session Invalid/Expired. IP: {$ip}, UA: {$ua}, Session: {$submitted_session}, Form ID: {$form_id}");
+                continue;
+            }
+
+            // --- IP/User-Agent Hash Verification ---
+            $expected_iphash = sha1($ip . $ua);
+            if ($submitted_iphash !== $expected_iphash) {
+                $field->failed_validation = true; $field->validation_message = $user_error_message;
+                delete_transient($session_transient_key); pch_register_failure($ip);
+                pch_log_event("GF Failure: IP/UA Mismatch. IP: {$ip}, UA: {$ua}, Submitted: {$submitted_iphash}, Expected: {$expected_iphash}, Form ID: {$form_id}");
+                continue;
+            }
+
+            // --- Interaction / JS Execution Check ---
+            if (empty($submitted_value) || $submitted_value === 'no_interaction') {
+                $field->failed_validation = true; $field->validation_message = $user_error_message;
+                delete_transient($session_transient_key); pch_register_failure($ip);
+                pch_log_event("GF Failure: No Interaction/JS Fail. IP: {$ip}, UA: {$ua}, Token: {$submitted_value}, Form ID: {$form_id}");
+                continue;
+            }
+
+            // --- Token Decoding and Basic Format Check ---
+            $decoded = base64_decode($submitted_value, true);
+            if ($decoded === false || strpos($decoded, ':') === false) {
+                $field->failed_validation = true; $field->validation_message = $user_error_message;
+                delete_transient($session_transient_key); pch_register_failure($ip);
+                pch_log_event("GF Failure: Invalid Token Format. IP: {$ip}, UA: {$ua}, Token: {$submitted_value}, Form ID: {$form_id}");
+                continue;
+            }
+
+            // --- Token Content Verification (Timing & Fingerprint Hash) ---
+            list($timeSpent, $navigatorHash) = explode(':', $decoded, 2);
+            $min_time = (int) pch_get_option('pch_min_time_threshold', 3000);
+            $min_hash_len = (int) pch_get_option('pch_min_hash_length', 10);
+            if ($min_time <= 0) { $min_time = 3000; }
+            if ($min_hash_len <= 0) { $min_hash_len = 10; }
+
+            if (!is_numeric($timeSpent) || $timeSpent < $min_time || strlen($navigatorHash) < $min_hash_len) {
+                $field->failed_validation = true; $field->validation_message = $user_error_message;
+                delete_transient($session_transient_key); pch_register_failure($ip);
+                pch_log_event("GF Failure: Timing/Fingerprint Invalid. IP: {$ip}, UA: {$ua}, Time: {$timeSpent} (Min: {$min_time}), HashLen: " . strlen($navigatorHash) . " (Min: {$min_hash_len}), Form ID: {$form_id}");
+                continue;
+            }
+
+            // --- ALL CHECKS PASSED ---
+            delete_transient($session_transient_key);
+            // pch_log_event("GF Success: Verification Passed. IP: {$ip}, Form ID: {$form_id}");
+            break;
         }
     }
     return $form;
 }
 
+
 // --- Submission escalation hook ---
-// pch_after_submission_alert - remains the same (uses pch_log_event now)
 add_action('gform_after_submission', 'pch_after_submission_alert', 10, 2);
 function pch_after_submission_alert($entry, $form) { $ip = pch_get_visitor_ip(); if (pch_check_rate_limit($ip)) { pch_log_event("GF Alert: Submission attempt from BANNED IP. IP: {$ip}, Form ID: {$form['id']}"); pch_send_webhook([ 'event' => 'submission_after_ban', 'ip' => $ip, 'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '', 'timestamp' => time(), 'form_id' => $form['id'], 'entry_id' => $entry['id'] ?? 'N/A' ]); } }
 
 // --- Admin UI ---
-// pch_add_admin_menu_links, pch_add_action_links - remain the same
 function pch_add_admin_menu_links() { if (is_multisite()) { add_submenu_page('settings.php', __('Passive CAPTCHA Settings', 'passive-captcha-hardened'), __('Passive CAPTCHA', 'passive-captcha-hardened'), 'manage_network_options', 'pch-settings', 'pch_settings_page'); } else { add_options_page(__('Passive CAPTCHA Settings', 'passive-captcha-hardened'), __('Passive CAPTCHA', 'passive-captcha-hardened'), 'manage_options', 'pch-settings', 'pch_settings_page'); } }
 add_action(is_multisite() ? 'network_admin_menu' : 'admin_menu', 'pch_add_admin_menu_links');
 function pch_add_action_links ( $links ) { $capability = is_multisite() ? 'manage_network_options' : 'manage_options'; if (current_user_can($capability)) { $settings_url = is_multisite() ? network_admin_url('settings.php?page=pch-settings') : admin_url('options-general.php?page=pch-settings'); $settings_link = '<a href="' . esc_url($settings_url) . '">' . __('Settings', 'passive-captcha-hardened') . '</a>'; array_unshift( $links, $settings_link ); } return $links; }
 add_filter( 'plugin_action_links_' . plugin_basename( __FILE__ ), 'pch_add_action_links' );
 
 /**
- * Renders the settings page HTML with new options and log viewer/clear button.
+ * Renders the settings page HTML with new options and log viewer/clear buttons.
  */
 function pch_settings_page() {
-    global $wpdb; // Needed for direct DB query to clear transients
+    global $wpdb; // Needed for direct DB query
     $capability = is_multisite() ? 'manage_network_options' : 'manage_options';
     if (!current_user_can($capability)) { wp_die(__('Sorry, you are not allowed to access this page.')); }
 
-    $message = ''; // To store feedback messages
+    $message = ''; // Feedback messages
+    $error_message = ''; // Error messages
 
-    // Handle Clear Log action
-    if (isset($_POST['pch_clear_log_nonce']) && wp_verify_nonce($_POST['pch_clear_log_nonce'], 'pch_clear_log_action')) {
-        if (current_user_can($capability)) {
-            pch_update_option('pch_recent_logs', []);
-            $message = __('Recent log entries cleared.', 'passive-captcha-hardened');
-            pch_log_event("Admin Action: Recent logs cleared by user ID " . get_current_user_id());
-        } else { $message = __('Error: Insufficient permissions to clear logs.', 'passive-captcha-hardened'); }
-        // Redirect to avoid re-clearing on refresh
-        wp_safe_redirect(add_query_arg('pch_message', urlencode($message), wp_get_referer())); exit;
-    }
+    try {
+        // Handle Clear Log action
+        if (isset($_POST['pch_clear_log_nonce']) && wp_verify_nonce($_POST['pch_clear_log_nonce'], 'pch_clear_log_action')) {
+            if (current_user_can($capability)) {
+                pch_update_option('pch_recent_logs', []);
+                $message = __('Recent log entries cleared.', 'passive-captcha-hardened');
+                pch_log_event("Admin Action: Recent logs cleared by user ID " . get_current_user_id());
+            } else { $error_message = __('Error: Insufficient permissions to clear logs.', 'passive-captcha-hardened'); }
+             // Use a redirect to clear POST data
+            wp_safe_redirect(add_query_arg('pch_message', urlencode($message ?: $error_message), wp_get_referer())); exit;
+        }
 
-    // Handle Clear Bans action
-    if (isset($_POST['pch_clear_bans_nonce']) && wp_verify_nonce($_POST['pch_clear_bans_nonce'], 'pch_clear_bans_action')) {
-         if (current_user_can($capability)) {
-            $transient_prefix = '_transient_pch_fail_';
-            $sql = $wpdb->prepare("SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s", $transient_prefix . '%');
-            $transient_keys = $wpdb->get_col($sql);
-            $deleted_count = 0;
-            if (!empty($transient_keys)) {
-                foreach ($transient_keys as $key) {
-                    // Transients are stored with a prefix in the options table
-                    if (strpos($key, $transient_prefix) === 0) {
-                        $transient_name = substr($key, strlen('_transient_')); // Get original transient name
-                        if (delete_transient($transient_name)) {
-                             $deleted_count++;
+        // Handle Clear Bans action
+        if (isset($_POST['pch_clear_bans_nonce']) && wp_verify_nonce($_POST['pch_clear_bans_nonce'], 'pch_clear_bans_action')) {
+             if (current_user_can($capability)) {
+                $transient_prefix = '_transient_pch_fail_';
+                $sql = $wpdb->prepare("SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s", $transient_prefix . '%');
+                $transient_keys = $wpdb->get_col($sql);
+                $deleted_count = 0;
+                if (!empty($transient_keys)) {
+                    foreach ($transient_keys as $key) {
+                        if (strpos($key, $transient_prefix) === 0) {
+                            $transient_name = substr($key, strlen('_transient_'));
+                            if (delete_transient($transient_name)) { $deleted_count++; }
                         }
                     }
                 }
-            }
-            $message = sprintf(__('Cleared %d rate limit ban entries.', 'passive-captcha-hardened'), $deleted_count);
-            pch_log_event("Admin Action: All rate limit bans cleared by user ID " . get_current_user_id() . ". Cleared count: " . $deleted_count);
-        } else { $message = __('Error: Insufficient permissions to clear bans.', 'passive-captcha-hardened'); }
-        // Redirect to avoid re-clearing on refresh
-        wp_safe_redirect(add_query_arg('pch_message', urlencode($message), wp_get_referer())); exit;
+                $message = sprintf(__('Cleared %d rate limit ban entries.', 'passive-captcha-hardened'), $deleted_count);
+                pch_log_event("Admin Action: All rate limit bans cleared by user ID " . get_current_user_id() . ". Cleared count: " . $deleted_count);
+            } else { $error_message = __('Error: Insufficient permissions to clear bans.', 'passive-captcha-hardened'); }
+            wp_safe_redirect(add_query_arg('pch_message', urlencode($message ?: $error_message), wp_get_referer())); exit;
+        }
+
+        // Process main settings form submission
+        if (isset($_POST['pch_settings_nonce']) && wp_verify_nonce($_POST['pch_settings_nonce'], 'pch_save_settings')) {
+            // Save all settings...
+            pch_update_option('pch_rate_limit_threshold', intval($_POST['rate_limit']));
+            pch_update_option('pch_ban_duration', intval($_POST['ban_duration']));
+            pch_update_option('pch_session_lifetime', intval($_POST['session_lifetime']));
+            pch_update_option('pch_min_time_threshold', intval($_POST['min_time_threshold']));
+            pch_update_option('pch_min_hash_length', intval($_POST['min_hash_length']));
+            pch_update_option('pch_enable_webgl', isset($_POST['enable_webgl']) ? 1 : 0);
+            pch_update_option('pch_enable_math', isset($_POST['enable_math']) ? 1 : 0);
+            pch_update_option('pch_webhook_url', sanitize_text_field(esc_url_raw($_POST['webhook_url'])));
+            pch_update_option('pch_webhook_hmac_key', sanitize_text_field($_POST['hmac_key']));
+            pch_update_option('pch_custom_ip_header', sanitize_text_field(strtoupper(str_replace('-', '_', $_POST['custom_ip_header']))));
+            pch_update_option('pch_ip_whitelist', sanitize_textarea_field($_POST['ip_whitelist']));
+            pch_update_option('pch_ip_blacklist', sanitize_textarea_field($_POST['ip_blacklist']));
+
+            $message = __('Settings saved.', 'passive-captcha-hardened');
+            wp_safe_redirect(add_query_arg('pch_message', urlencode($message), wp_get_referer())); exit;
+        }
+    } catch (Exception $e) {
+        // Catch potential exceptions during processing
+        $error_message = __('An unexpected error occurred:', 'passive-captcha-hardened') . ' ' . $e->getMessage();
+        pch_log_event("Admin Error: Exception in settings page - " . $e->getMessage());
     }
 
-    // Process main settings form submission
-    if (isset($_POST['pch_settings_nonce']) && wp_verify_nonce($_POST['pch_settings_nonce'], 'pch_save_settings')) {
-        // Save all settings... (same as before)
-        pch_update_option('pch_rate_limit_threshold', intval($_POST['rate_limit']));
-        pch_update_option('pch_ban_duration', intval($_POST['ban_duration']));
-        pch_update_option('pch_session_lifetime', intval($_POST['session_lifetime']));
-        pch_update_option('pch_min_time_threshold', intval($_POST['min_time_threshold']));
-        pch_update_option('pch_min_hash_length', intval($_POST['min_hash_length']));
-        pch_update_option('pch_enable_webgl', isset($_POST['enable_webgl']) ? 1 : 0);
-        pch_update_option('pch_enable_math', isset($_POST['enable_math']) ? 1 : 0);
-        pch_update_option('pch_webhook_url', sanitize_text_field(esc_url_raw($_POST['webhook_url'])));
-        pch_update_option('pch_webhook_hmac_key', sanitize_text_field($_POST['hmac_key']));
-        pch_update_option('pch_custom_ip_header', sanitize_text_field(strtoupper(str_replace('-', '_', $_POST['custom_ip_header']))));
-        pch_update_option('pch_ip_whitelist', sanitize_textarea_field($_POST['ip_whitelist']));
-        pch_update_option('pch_ip_blacklist', sanitize_textarea_field($_POST['ip_blacklist']));
-
-        $message = __('Settings saved.', 'passive-captcha-hardened');
-        // Redirect to avoid re-saving on refresh
-        wp_safe_redirect(add_query_arg('pch_message', urlencode($message), wp_get_referer())); exit;
-    }
-
-    // Display messages from redirects
-    if (isset($_GET['pch_message'])) {
+    // Display messages from redirects or errors
+    if (!empty($error_message)) {
+         echo '<div id="message" class="error notice is-dismissible"><p>' . esc_html($error_message) . '</p></div>';
+    } elseif (isset($_GET['pch_message'])) {
          echo '<div id="message" class="updated notice is-dismissible"><p>' . esc_html(urldecode($_GET['pch_message'])) . '</p></div>';
     }
 
@@ -183,7 +446,7 @@ function pch_settings_page() {
         </details>
         <hr>
 
-        <form method="post" action="">
+        <form method="post" action="" id="pch-main-settings-form">
             <input type="hidden" name="pch_settings_nonce" value="<?php echo wp_create_nonce('pch_save_settings'); ?>">
 
             <h2><?php _e('Behavior Settings', 'passive-captcha-hardened'); ?></h2>
@@ -241,7 +504,7 @@ function pch_settings_page() {
         <form method="post" action="" style="margin-top: 0;">
             <?php // Add nonce for the clear log action ?>
             <input type="hidden" name="pch_clear_log_nonce" value="<?php echo wp_create_nonce('pch_clear_log_action'); ?>">
-            <?php submit_button(__('Clear Recent Log Entries', 'passive-captcha-hardened'), 'delete', 'pch_clear_log', false); ?>
+            <?php submit_button(__('Clear Recent Log Entries', 'passive-captcha-hardened'), 'delete', 'pch_clear_log', false); // Use 'delete' class for styling ?>
         </form>
         </div><?php
 }
