@@ -2,9 +2,9 @@
 /**
  * Plugin Name: Passive CAPTCHA Hardened for Gravity Forms (Managed Hosting Ready)
  * Description: Configurable passive CAPTCHA for Gravity Forms with timing, nonce, session, IP/UA checks, rate limiting, webhooks, IP lists, conditional JA3, improved IP detection, admin log viewer, and ban clearing.
- * Version: 3.4
+ * Version: 3.5
  * Author: Rich Hamilton
- * Author URI: https://github.com/rhamenator
+ * Website: https://github.com/rhamenator/passive-captcha-gravity-forms
  * Network: true
  */
 
@@ -18,10 +18,7 @@ if (!defined('ABSPATH')) {
  * Multi-site aware get_option wrapper.
  */
 function pch_get_option($option, $default = '') {
-    // Ensure WordPress core functions are available
-    if (!function_exists('is_multisite')) {
-        require_once ABSPATH . 'wp-includes/load.php';
-    }
+    if (!function_exists('is_multisite')) { require_once ABSPATH . 'wp-includes/load.php'; }
     return is_multisite() ? get_site_option($option, $default) : get_option($option, $default);
 }
 
@@ -29,122 +26,46 @@ function pch_get_option($option, $default = '') {
  * Multi-site aware update_option wrapper.
  */
 function pch_update_option($option, $value) {
-     if (!function_exists('is_multisite')) {
-        require_once ABSPATH . 'wp-includes/load.php';
-    }
-    // Use 'no' for autoload parameter in single site update_option for non-essential options like logs
-    $autoload = ($option === 'pch_recent_logs') ? 'no' : null; // null lets WP decide default ('yes')
+     if (!function_exists('is_multisite')) { require_once ABSPATH . 'wp-includes/load.php'; }
+    $autoload = ($option === 'pch_recent_logs') ? 'no' : null;
     return is_multisite() ? update_site_option($option, $value) : update_option($option, $value, $autoload);
 }
 
 /**
  * Logs a message to both the PHP error log and a persistent WordPress option.
  * Keeps a limited number of recent log entries.
- *
- * @param string $message The message to log.
  */
 function pch_log_event($message) {
-    // 1. Log to standard PHP error log (if possible)
-    // Ensure basic WP functions are loaded if called early
-     if (!function_exists('current_time')) {
-        require_once ABSPATH . WPINC . '/functions.php';
-    }
+    if (!function_exists('current_time')) { require_once ABSPATH . WPINC . '/functions.php'; }
     error_log("[Passive CAPTCHA] " . $message);
-
-    // 2. Log to WordPress option
-    $log_option_key = 'pch_recent_logs';
-    $max_log_entries = 50; // Maximum number of entries to keep
-
-    // Get existing logs (use direct get_site_option/get_option to avoid recursion if pch_get_option uses logging)
+    $log_option_key = 'pch_recent_logs'; $max_log_entries = 50;
     $logs = is_multisite() ? get_site_option($log_option_key, []) : get_option($log_option_key, []);
-
-    // Ensure it's an array
-    if (!is_array($logs)) {
-        $logs = [];
-    }
-
-    // Add new entry with timestamp
-    $timestamp = current_time('mysql'); // WordPress localized time
-    // Sanitize message slightly before storing
-    $sanitized_message = wp_strip_all_tags($message);
-    array_unshift($logs, "[$timestamp] " . $sanitized_message); // Add to the beginning
-
-    // Trim logs if exceeding max entries
-    if (count($logs) > $max_log_entries) {
-        $logs = array_slice($logs, 0, $max_log_entries);
-    }
-
-    // Save back to options using our helper to handle single/multisite and autoload for logs
+    if (!is_array($logs)) { $logs = []; }
+    $timestamp = current_time('mysql'); $sanitized_message = wp_strip_all_tags($message);
+    array_unshift($logs, "[$timestamp] " . $sanitized_message);
+    if (count($logs) > $max_log_entries) { $logs = array_slice($logs, 0, $max_log_entries); }
     pch_update_option($log_option_key, $logs);
 }
 
-
 /**
  * Helper function to get the visitor's real IP address, considering proxies.
- * Checks common headers in a specific order, including a custom one from settings.
- *
- * @return string The determined IP address.
  */
 function pch_get_visitor_ip() {
-    // Get custom header key from settings, sanitize it
     $custom_header_key_raw = pch_get_option('pch_custom_ip_header', '');
-    // Basic sanitization: allow alphanumeric, underscore, hyphen.
     $custom_header_key = preg_replace('/[^A-Z0-9_\-]/', '', strtoupper($custom_header_key_raw));
-    // Optionally prepend HTTP_ if it seems like a standard header name was entered without it
-    // if (!empty($custom_header_key) && strpos($custom_header_key, 'HTTP_') !== 0 && strpos($custom_header_key, 'REMOTE_') !== 0) {
-    //      $custom_header_key = 'HTTP_' . $custom_header_key;
-    // }
-
-    $ip_headers = [];
-    // Add custom header first if it's set and looks valid
-    if (!empty($custom_header_key)) {
-        $ip_headers[] = $custom_header_key;
-    }
-
-    // Add standard headers
-    $ip_headers = array_merge($ip_headers, [
-        'HTTP_CF_CONNECTING_IP', // Cloudflare
-        'HTTP_X_REAL_IP',        // Common Nginx proxy header
-        'HTTP_CLIENT_IP',
-        'HTTP_X_FORWARDED_FOR',  // Standard proxy header
-        'REMOTE_ADDR'            // Direct connection IP (fallback)
-    ]);
-
-    // Remove duplicates just in case custom header was a standard one
+    $ip_headers = []; if (!empty($custom_header_key)) { $ip_headers[] = $custom_header_key; }
+    $ip_headers = array_merge($ip_headers, [ 'HTTP_CF_CONNECTING_IP', 'HTTP_X_REAL_IP', 'HTTP_CLIENT_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR' ]);
     $ip_headers = array_unique($ip_headers);
-
     foreach ($ip_headers as $header) {
         if (!empty($_SERVER[$header])) {
-            // HTTP_X_FORWARDED_FOR can be a comma-separated list, take the first valid IP.
             if ($header === 'HTTP_X_FORWARDED_FOR') {
                 $ip_list = explode(',', $_SERVER[$header]);
-                // Iterate through the list to find the first valid public IP
-                foreach ($ip_list as $ip_candidate) {
-                    $ip = trim($ip_candidate);
-                    // Validate the IP format (basic IPv4/IPv6 check) and ensure it's not a private/reserved IP if possible
-                    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-                        return $ip; // Return first valid public IP
-                    }
-                     // If only private IPs are found, maybe take the first one anyway? Or fall through.
-                    // For simplicity here, we take the first one if it validates at all.
-                    if (filter_var(trim($ip_list[0]), FILTER_VALIDATE_IP)) {
-                       return trim($ip_list[0]);
-                    }
-                }
-                // If loop finishes without finding a valid public IP in XFF, continue to next header
-                continue;
-            } else {
-                 $ip = trim($_SERVER[$header]);
-            }
-
-            // Validate the IP format for other headers
-            if (filter_var($ip, FILTER_VALIDATE_IP)) {
-                return $ip;
-            }
+                foreach ($ip_list as $ip_candidate) { $ip = trim($ip_candidate); if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) { return $ip; } }
+                $first = trim($ip_list[0]); if (filter_var($first, FILTER_VALIDATE_IP)) { return $first; } continue;
+            } else { $ip = trim($_SERVER[$header]); }
+            if (filter_var($ip, FILTER_VALIDATE_IP)) { return $ip; }
         }
     }
-
-    // Default fallback
     return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 }
 
@@ -153,10 +74,20 @@ function pch_get_visitor_ip() {
 
 /**
  * Enqueue JS and localize data for the session.
+ * Ensures core WP functions and GF class exist before proceeding.
  */
 function pch_enqueue_scripts() {
-    // Load scripts on any page/post where a form might appear.
-    if (is_page() || is_singular()) { // Check if it's a single page or post
+    // Only enqueue if Gravity Forms is active and not in admin
+    if (is_admin() || !class_exists('GFForms')) {
+        return;
+    }
+
+    // Check if it's a page/post view where a form might be displayed
+    // Gravity Forms usually handles its own script loading based on form presence,
+    // but we enqueue ours broadly and let the JS check for the field.
+    // Could add `has_shortcode` checks or specific page IDs if needed for optimization.
+    // if (is_page() || is_singular()) {
+
         // Ensure core WP functions are available
         if (!function_exists('wp_create_nonce') || !function_exists('bin2hex') || !function_exists('set_transient') || !function_exists('wp_enqueue_script') || !function_exists('wp_localize_script')) {
              pch_log_event("Error: Core WordPress functions missing during script enqueue.");
@@ -168,27 +99,37 @@ function pch_enqueue_scripts() {
         $visitor_ip = pch_get_visitor_ip();
         $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? '';
 
-        // Get session lifetime from settings (default 12 hours)
         $session_lifetime_seconds = (int) pch_get_option('pch_session_lifetime', 12 * HOUR_IN_SECONDS);
         if ($session_lifetime_seconds <= 0) { $session_lifetime_seconds = 12 * HOUR_IN_SECONDS; }
         set_transient('pch_' . $session_token, time(), $session_lifetime_seconds);
 
-        wp_enqueue_script('passive-captcha-hardened', plugin_dir_url(__FILE__) . 'js/passive-captcha.js', [], '3.4', true); // Version match
+        // Enqueue the script with dependencies
+        wp_enqueue_script(
+            'passive-captcha-hardened',
+            plugin_dir_url(__FILE__) . 'js/passive-captcha.js',
+            // Dependencies: jQuery (used by GF), gform_gravityforms (main GF script), gform_conditional_logic (if using)
+            // Using 'gform_gravityforms' ensures GF base scripts are loaded first.
+            ['jquery', 'gform_gravityforms'],
+            '3.5', // Update version
+            true // Load in footer
+        );
 
         // Get flags for JS checks from settings
         $enable_webgl = (bool) pch_get_option('pch_enable_webgl', true);
         $enable_math = (bool) pch_get_option('pch_enable_math', true);
 
+        // Localize data for the script
         wp_localize_script('passive-captcha-hardened', 'pchData', [
             'nonce' => $token_nonce,
             'sessionToken' => $session_token,
             'ipHash' => sha1($visitor_ip . $user_agent),
-            'enableWebGL' => $enable_webgl, // Pass flag to JS
-            'enableMath' => $enable_math,   // Pass flag to JS
+            'enableWebGL' => $enable_webgl,
+            'enableMath' => $enable_math,
         ]);
-    }
+    // }
 }
-add_action('wp_enqueue_scripts', 'pch_enqueue_scripts');
+// Use a priority lower than default (10) if needed, but 20 should be fine.
+add_action('wp_enqueue_scripts', 'pch_enqueue_scripts', 20);
 
 
 // --- Rate limiting helpers ---
@@ -210,123 +151,44 @@ add_filter('gform_pre_validation', 'pch_validate_passive_captcha');
  * Validates the passive CAPTCHA during Gravity Forms submission (Improved).
  */
 function pch_validate_passive_captcha($form) {
-    // Ensure Gravity Forms functions are available if needed
-    if (!function_exists('rgpost')) {
-         pch_log_event("GF Error: rgpost function not found during validation.");
-         // Potentially mark all fields as failed or return form as is?
-         // For now, let's assume it exists if this hook runs.
-    }
+    if (!function_exists('rgpost')) { pch_log_event("GF Error: rgpost function not found during validation."); return $form; }
 
-    $ip = pch_get_visitor_ip();
-    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    $ip = pch_get_visitor_ip(); $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
     $user_error_message = __('Security check failed. Please refresh the page and try again.', 'passive-captcha-hardened');
-    $ja3_header_key = 'HTTP_X_JA3_FINGERPRINT';
-    $ja3_fingerprint = $_SERVER[$ja3_header_key] ?? '';
-    $form_id = $form['id'] ?? 'N/A'; // Get form ID for logging
+    $ja3_header_key = 'HTTP_X_JA3_FINGERPRINT'; $ja3_fingerprint = $_SERVER[$ja3_header_key] ?? '';
+    $form_id = $form['id'] ?? 'N/A';
 
     foreach ($form['fields'] as &$field) {
-        // Find the hidden field labelled 'CAPTCHA Token'
         if ($field->type === 'hidden' && isset($field->label) && strpos($field->label, 'CAPTCHA Token') !== false) {
-
             // --- IP Blacklist Check ---
-            if (pch_is_ip_blacklisted($ip)) {
-                $field->failed_validation = true; $field->validation_message = __('Your IP is blacklisted.', 'passive-captcha-hardened');
-                pch_log_event("GF Failure: IP Blacklisted. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}");
-                continue;
-            }
+            if (pch_is_ip_blacklisted($ip)) { $field->failed_validation = true; $field->validation_message = __('Your IP is blacklisted.', 'passive-captcha-hardened'); pch_log_event("GF Failure: IP Blacklisted. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}"); continue; }
             // --- IP Whitelist Check ---
             if (pch_is_ip_whitelisted($ip)) { continue; }
-
             // --- Conditional JA3 Fingerprint Check ---
-            if (!empty($ja3_fingerprint)) {
-                $min_ja3_len = 10;
-                if (strlen($ja3_fingerprint) < $min_ja3_len) {
-                     $field->failed_validation = true; $field->validation_message = $user_error_message;
-                     pch_register_failure($ip);
-                     pch_log_event("GF Failure: JA3 Invalid Format. IP: {$ip}, UA: {$ua}, JA3: {$ja3_fingerprint}, Form ID: {$form_id}");
-                     pch_send_webhook(['event' => 'ja3_invalid_format', 'ip' => $ip, 'user_agent' => $ua, 'ja3' => $ja3_fingerprint, 'timestamp' => time(), 'form_id' => $form_id]);
-                     continue;
-                }
-            }
-
+            if (!empty($ja3_fingerprint)) { $min_ja3_len = 10; if (strlen($ja3_fingerprint) < $min_ja3_len) { $field->failed_validation = true; $field->validation_message = $user_error_message; pch_register_failure($ip); pch_log_event("GF Failure: JA3 Invalid Format. IP: {$ip}, UA: {$ua}, JA3: {$ja3_fingerprint}, Form ID: {$form_id}"); pch_send_webhook(['event' => 'ja3_invalid_format', 'ip' => $ip, 'user_agent' => $ua, 'ja3' => $ja3_fingerprint, 'timestamp' => time(), 'form_id' => $form_id]); continue; } }
             // --- Rate Limit Check ---
-            if (pch_check_rate_limit($ip)) {
-                $field->failed_validation = true; $field->validation_message = __('Access temporarily blocked due to high activity.', 'passive-captcha-hardened');
-                pch_log_event("GF Failure: Rate Limit Exceeded. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}");
-                continue;
-            }
-
+            if (pch_check_rate_limit($ip)) { $field->failed_validation = true; $field->validation_message = __('Access temporarily blocked due to high activity.', 'passive-captcha-hardened'); pch_log_event("GF Failure: Rate Limit Exceeded. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}"); continue; }
             // --- Retrieve Submitted Values ---
-            $submitted_value = rgpost('input_' . $field->id);
-            $submitted_nonce = rgpost('pch_nonce');
-            $submitted_session = rgpost('pch_session');
-            $submitted_iphash = rgpost('pch_iphash');
-
+            $submitted_value = rgpost('input_' . $field->id); $submitted_nonce = rgpost('pch_nonce'); $submitted_session = rgpost('pch_session'); $submitted_iphash = rgpost('pch_iphash');
             // --- Nonce Verification ---
-            if (!wp_verify_nonce($submitted_nonce, 'pch_captcha_nonce')) {
-                $field->failed_validation = true; $field->validation_message = $user_error_message;
-                pch_register_failure($ip); pch_log_event("GF Failure: Nonce Invalid. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}");
-                continue;
-            }
-
+            if (!wp_verify_nonce($submitted_nonce, 'pch_captcha_nonce')) { $field->failed_validation = true; $field->validation_message = $user_error_message; pch_register_failure($ip); pch_log_event("GF Failure: Nonce Invalid. IP: {$ip}, UA: {$ua}, Form ID: {$form_id}"); continue; }
             // --- Session Token Verification ---
-            $session_transient_key = 'pch_' . $submitted_session;
-            if (empty($submitted_session) || !get_transient($session_transient_key)) {
-                $field->failed_validation = true; $field->validation_message = $user_error_message;
-                if ($submitted_session) delete_transient($session_transient_key);
-                pch_register_failure($ip); pch_log_event("GF Failure: Session Invalid/Expired. IP: {$ip}, UA: {$ua}, Session: {$submitted_session}, Form ID: {$form_id}");
-                continue;
-            }
-
+            $session_transient_key = 'pch_' . $submitted_session; if (empty($submitted_session) || !get_transient($session_transient_key)) { $field->failed_validation = true; $field->validation_message = $user_error_message; if ($submitted_session) delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: Session Invalid/Expired. IP: {$ip}, UA: {$ua}, Session: {$submitted_session}, Form ID: {$form_id}"); continue; }
             // --- IP/User-Agent Hash Verification ---
-            $expected_iphash = sha1($ip . $ua);
-            if ($submitted_iphash !== $expected_iphash) {
-                $field->failed_validation = true; $field->validation_message = $user_error_message;
-                delete_transient($session_transient_key); pch_register_failure($ip);
-                pch_log_event("GF Failure: IP/UA Mismatch. IP: {$ip}, UA: {$ua}, Submitted: {$submitted_iphash}, Expected: {$expected_iphash}, Form ID: {$form_id}");
-                continue;
-            }
-
+            $expected_iphash = sha1($ip . $ua); if ($submitted_iphash !== $expected_iphash) { $field->failed_validation = true; $field->validation_message = $user_error_message; delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: IP/UA Mismatch. IP: {$ip}, UA: {$ua}, Submitted: {$submitted_iphash}, Expected: {$expected_iphash}, Form ID: {$form_id}"); continue; }
             // --- Interaction / JS Execution Check ---
-            if (empty($submitted_value) || $submitted_value === 'no_interaction') {
-                $field->failed_validation = true; $field->validation_message = $user_error_message;
-                delete_transient($session_transient_key); pch_register_failure($ip);
-                pch_log_event("GF Failure: No Interaction/JS Fail. IP: {$ip}, UA: {$ua}, Token: {$submitted_value}, Form ID: {$form_id}");
-                continue;
-            }
-
+            if (empty($submitted_value) || $submitted_value === 'no_interaction') { $field->failed_validation = true; $field->validation_message = $user_error_message; delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: No Interaction/JS Fail. IP: {$ip}, UA: {$ua}, Token: {$submitted_value}, Form ID: {$form_id}"); continue; }
             // --- Token Decoding and Basic Format Check ---
-            $decoded = base64_decode($submitted_value, true);
-            if ($decoded === false || strpos($decoded, ':') === false) {
-                $field->failed_validation = true; $field->validation_message = $user_error_message;
-                delete_transient($session_transient_key); pch_register_failure($ip);
-                pch_log_event("GF Failure: Invalid Token Format. IP: {$ip}, UA: {$ua}, Token: {$submitted_value}, Form ID: {$form_id}");
-                continue;
-            }
-
+            $decoded = base64_decode($submitted_value, true); if ($decoded === false || strpos($decoded, ':') === false) { $field->failed_validation = true; $field->validation_message = $user_error_message; delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: Invalid Token Format. IP: {$ip}, UA: {$ua}, Token: {$submitted_value}, Form ID: {$form_id}"); continue; }
             // --- Token Content Verification (Timing & Fingerprint Hash) ---
-            list($timeSpent, $navigatorHash) = explode(':', $decoded, 2);
-            $min_time = (int) pch_get_option('pch_min_time_threshold', 3000);
-            $min_hash_len = (int) pch_get_option('pch_min_hash_length', 10);
-            if ($min_time <= 0) { $min_time = 3000; }
-            if ($min_hash_len <= 0) { $min_hash_len = 10; }
-
-            if (!is_numeric($timeSpent) || $timeSpent < $min_time || strlen($navigatorHash) < $min_hash_len) {
-                $field->failed_validation = true; $field->validation_message = $user_error_message;
-                delete_transient($session_transient_key); pch_register_failure($ip);
-                pch_log_event("GF Failure: Timing/Fingerprint Invalid. IP: {$ip}, UA: {$ua}, Time: {$timeSpent} (Min: {$min_time}), HashLen: " . strlen($navigatorHash) . " (Min: {$min_hash_len}), Form ID: {$form_id}");
-                continue;
-            }
-
+            list($timeSpent, $navigatorHash) = explode(':', $decoded, 2); $min_time = (int) pch_get_option('pch_min_time_threshold', 3000); $min_hash_len = (int) pch_get_option('pch_min_hash_length', 10); if ($min_time <= 0) { $min_time = 3000; } if ($min_hash_len <= 0) { $min_hash_len = 10; }
+            if (!is_numeric($timeSpent) || $timeSpent < $min_time || strlen($navigatorHash) < $min_hash_len) { $field->failed_validation = true; $field->validation_message = $user_error_message; delete_transient($session_transient_key); pch_register_failure($ip); pch_log_event("GF Failure: Timing/Fingerprint Invalid. IP: {$ip}, UA: {$ua}, Time: {$timeSpent} (Min: {$min_time}), HashLen: " . strlen($navigatorHash) . " (Min: {$min_hash_len}), Form ID: {$form_id}"); continue; }
             // --- ALL CHECKS PASSED ---
-            delete_transient($session_transient_key);
-            // pch_log_event("GF Success: Verification Passed. IP: {$ip}, Form ID: {$form_id}");
-            break;
+            delete_transient($session_transient_key); break;
         }
     }
     return $form;
 }
-
 
 // --- Submission escalation hook ---
 add_action('gform_after_submission', 'pch_after_submission_alert', 10, 2);
@@ -342,176 +204,84 @@ add_filter( 'plugin_action_links_' . plugin_basename( __FILE__ ), 'pch_add_actio
  * Renders the settings page HTML with new options and log viewer/clear buttons.
  */
 function pch_settings_page() {
-    global $wpdb; // Needed for direct DB query
-    $capability = is_multisite() ? 'manage_network_options' : 'manage_options';
+    global $wpdb; $capability = is_multisite() ? 'manage_network_options' : 'manage_options';
     if (!current_user_can($capability)) { wp_die(__('Sorry, you are not allowed to access this page.')); }
-
-    $message = ''; // Feedback messages
-    $error_message = ''; // Error messages
-
+    $message = ''; $error_message = '';
     try {
         // Handle Clear Log action
         if (isset($_POST['pch_clear_log_nonce']) && wp_verify_nonce($_POST['pch_clear_log_nonce'], 'pch_clear_log_action')) {
-            if (current_user_can($capability)) {
-                pch_update_option('pch_recent_logs', []);
-                $message = __('Recent log entries cleared.', 'passive-captcha-hardened');
-                pch_log_event("Admin Action: Recent logs cleared by user ID " . get_current_user_id());
-            } else { $error_message = __('Error: Insufficient permissions to clear logs.', 'passive-captcha-hardened'); }
-             // Use a redirect to clear POST data
+            if (current_user_can($capability)) { pch_update_option('pch_recent_logs', []); $message = __('Recent log entries cleared.', 'passive-captcha-hardened'); pch_log_event("Admin Action: Recent logs cleared by user ID " . get_current_user_id()); }
+            else { $error_message = __('Error: Insufficient permissions to clear logs.', 'passive-captcha-hardened'); }
             wp_safe_redirect(add_query_arg('pch_message', urlencode($message ?: $error_message), wp_get_referer())); exit;
         }
-
         // Handle Clear Bans action
         if (isset($_POST['pch_clear_bans_nonce']) && wp_verify_nonce($_POST['pch_clear_bans_nonce'], 'pch_clear_bans_action')) {
-             if (current_user_can($capability)) {
-                $transient_prefix = '_transient_pch_fail_';
-                $sql = $wpdb->prepare("SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s", $transient_prefix . '%');
-                $transient_keys = $wpdb->get_col($sql);
-                $deleted_count = 0;
-                if (!empty($transient_keys)) {
-                    foreach ($transient_keys as $key) {
-                        if (strpos($key, $transient_prefix) === 0) {
-                            $transient_name = substr($key, strlen('_transient_'));
-                            if (delete_transient($transient_name)) { $deleted_count++; }
-                        }
-                    }
-                }
-                $message = sprintf(__('Cleared %d rate limit ban entries.', 'passive-captcha-hardened'), $deleted_count);
-                pch_log_event("Admin Action: All rate limit bans cleared by user ID " . get_current_user_id() . ". Cleared count: " . $deleted_count);
-            } else { $error_message = __('Error: Insufficient permissions to clear bans.', 'passive-captcha-hardened'); }
+             if (current_user_can($capability)) { $transient_prefix = '_transient_pch_fail_'; $sql = $wpdb->prepare("SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s", $transient_prefix . '%'); $transient_keys = $wpdb->get_col($sql); $deleted_count = 0; if (!empty($transient_keys)) { foreach ($transient_keys as $key) { if (strpos($key, $transient_prefix) === 0) { $transient_name = substr($key, strlen('_transient_')); if (delete_transient($transient_name)) { $deleted_count++; } } } } $message = sprintf(__('Cleared %d rate limit ban entries.', 'passive-captcha-hardened'), $deleted_count); pch_log_event("Admin Action: All rate limit bans cleared by user ID " . get_current_user_id() . ". Cleared count: " . $deleted_count); }
+             else { $error_message = __('Error: Insufficient permissions to clear bans.', 'passive-captcha-hardened'); }
             wp_safe_redirect(add_query_arg('pch_message', urlencode($message ?: $error_message), wp_get_referer())); exit;
         }
-
         // Process main settings form submission
         if (isset($_POST['pch_settings_nonce']) && wp_verify_nonce($_POST['pch_settings_nonce'], 'pch_save_settings')) {
-            // Save all settings...
-            pch_update_option('pch_rate_limit_threshold', intval($_POST['rate_limit']));
-            pch_update_option('pch_ban_duration', intval($_POST['ban_duration']));
-            pch_update_option('pch_session_lifetime', intval($_POST['session_lifetime']));
-            pch_update_option('pch_min_time_threshold', intval($_POST['min_time_threshold']));
-            pch_update_option('pch_min_hash_length', intval($_POST['min_hash_length']));
-            pch_update_option('pch_enable_webgl', isset($_POST['enable_webgl']) ? 1 : 0);
-            pch_update_option('pch_enable_math', isset($_POST['enable_math']) ? 1 : 0);
-            pch_update_option('pch_webhook_url', sanitize_text_field(esc_url_raw($_POST['webhook_url'])));
-            pch_update_option('pch_webhook_hmac_key', sanitize_text_field($_POST['hmac_key']));
-            pch_update_option('pch_custom_ip_header', sanitize_text_field(strtoupper(str_replace('-', '_', $_POST['custom_ip_header']))));
-            pch_update_option('pch_ip_whitelist', sanitize_textarea_field($_POST['ip_whitelist']));
-            pch_update_option('pch_ip_blacklist', sanitize_textarea_field($_POST['ip_blacklist']));
-
+            pch_update_option('pch_rate_limit_threshold', intval($_POST['rate_limit'])); pch_update_option('pch_ban_duration', intval($_POST['ban_duration'])); pch_update_option('pch_session_lifetime', intval($_POST['session_lifetime'])); pch_update_option('pch_min_time_threshold', intval($_POST['min_time_threshold'])); pch_update_option('pch_min_hash_length', intval($_POST['min_hash_length'])); pch_update_option('pch_enable_webgl', isset($_POST['enable_webgl']) ? 1 : 0); pch_update_option('pch_enable_math', isset($_POST['enable_math']) ? 1 : 0); pch_update_option('pch_webhook_url', sanitize_text_field(esc_url_raw($_POST['webhook_url']))); pch_update_option('pch_webhook_hmac_key', sanitize_text_field($_POST['hmac_key'])); pch_update_option('pch_custom_ip_header', sanitize_text_field(strtoupper(str_replace('-', '_', $_POST['custom_ip_header'])))); pch_update_option('pch_ip_whitelist', sanitize_textarea_field($_POST['ip_whitelist'])); pch_update_option('pch_ip_blacklist', sanitize_textarea_field($_POST['ip_blacklist']));
             $message = __('Settings saved.', 'passive-captcha-hardened');
             wp_safe_redirect(add_query_arg('pch_message', urlencode($message), wp_get_referer())); exit;
         }
-    } catch (Exception $e) {
-        // Catch potential exceptions during processing
-        $error_message = __('An unexpected error occurred:', 'passive-captcha-hardened') . ' ' . $e->getMessage();
-        pch_log_event("Admin Error: Exception in settings page - " . $e->getMessage());
-    }
-
-    // Display messages from redirects or errors
-    if (!empty($error_message)) {
-         echo '<div id="message" class="error notice is-dismissible"><p>' . esc_html($error_message) . '</p></div>';
-    } elseif (isset($_GET['pch_message'])) {
-         echo '<div id="message" class="updated notice is-dismissible"><p>' . esc_html(urldecode($_GET['pch_message'])) . '</p></div>';
-    }
-
-    // Retrieve current settings and logs
-    $rate_limit = pch_get_option('pch_rate_limit_threshold', 5);
-    $ban_duration = pch_get_option('pch_ban_duration', 3600);
-    $session_lifetime = pch_get_option('pch_session_lifetime', 12 * HOUR_IN_SECONDS);
-    $min_time_threshold = pch_get_option('pch_min_time_threshold', 3000);
-    $min_hash_length = pch_get_option('pch_min_hash_length', 10);
-    $enable_webgl = (bool) pch_get_option('pch_enable_webgl', true);
-    $enable_math = (bool) pch_get_option('pch_enable_math', true);
-    $webhook_url = pch_get_option('pch_webhook_url', '');
-    $hmac_key = pch_get_option('pch_webhook_hmac_key', '');
-    $custom_ip_header = pch_get_option('pch_custom_ip_header', '');
-    $ip_whitelist = pch_get_option('pch_ip_whitelist', '');
-    $ip_blacklist = pch_get_option('pch_ip_blacklist', '');
-    $recent_logs = pch_get_option('pch_recent_logs', []);
-    if (!is_array($recent_logs)) { $recent_logs = []; }
-
+    } catch (Exception $e) { $error_message = __('An unexpected error occurred:', 'passive-captcha-hardened') . ' ' . $e->getMessage(); pch_log_event("Admin Error: Exception in settings page - " . $e->getMessage()); }
+    // Display messages
+    if (!empty($error_message)) { echo '<div id="message" class="error notice is-dismissible"><p>' . esc_html($error_message) . '</p></div>'; }
+    elseif (isset($_GET['pch_message'])) { echo '<div id="message" class="updated notice is-dismissible"><p>' . esc_html(urldecode($_GET['pch_message'])) . '</p></div>'; }
+    // Retrieve settings
+    $rate_limit = pch_get_option('pch_rate_limit_threshold', 5); $ban_duration = pch_get_option('pch_ban_duration', 3600); $session_lifetime = pch_get_option('pch_session_lifetime', 12 * HOUR_IN_SECONDS); $min_time_threshold = pch_get_option('pch_min_time_threshold', 3000); $min_hash_length = pch_get_option('pch_min_hash_length', 10); $enable_webgl = (bool) pch_get_option('pch_enable_webgl', true); $enable_math = (bool) pch_get_option('pch_enable_math', true); $webhook_url = pch_get_option('pch_webhook_url', ''); $hmac_key = pch_get_option('pch_webhook_hmac_key', ''); $custom_ip_header = pch_get_option('pch_custom_ip_header', ''); $ip_whitelist = pch_get_option('pch_ip_whitelist', ''); $ip_blacklist = pch_get_option('pch_ip_blacklist', ''); $recent_logs = pch_get_option('pch_recent_logs', []); if (!is_array($recent_logs)) { $recent_logs = []; }
     ?>
     <div class="wrap">
         <h1><?php _e('Passive CAPTCHA Settings (Gravity Forms)', 'passive-captcha-hardened'); ?></h1>
-
         <p><?php _e('Configure passive bot protection settings for Gravity Forms.', 'passive-captcha-hardened'); ?></p>
-         <details>
-            <summary><strong><?php _e('Click here for Instructions', 'passive-captcha-hardened'); ?></strong></summary>
-             <h2><?php _e('Instructions', 'passive-captcha-hardened'); ?></h2>
-            <ol>
-                 <li><?php printf(__('Ensure this plugin is activated (Network Activate on multisite).', 'passive-captcha-hardened')); ?></li>
-                 <li><?php printf(__('Edit your Gravity Form and add a %1$s field (Standard Fields). Set its %2$s to exactly %3$s.', 'passive-captcha-hardened'), '<strong>'.__('Hidden', 'passive-captcha-hardened').'</strong>', '<strong>'.__('Field Label', 'passive-captcha-hardened').'</strong>', '<code>CAPTCHA Token</code>'); ?></li>
-                 <li><?php printf(__('Configure the settings below as needed.', 'passive-captcha-hardened')); ?></li>
-            </ol>
-        </details>
-        <hr>
-
+         <details><summary><strong><?php _e('Click here for Instructions', 'passive-captcha-hardened'); ?></strong></summary><h2><?php _e('Instructions', 'passive-captcha-hardened'); ?></h2><ol><li><?php printf(__('Ensure this plugin is activated (Network Activate on multisite).', 'passive-captcha-hardened')); ?></li><li><?php printf(__('Edit your Gravity Form and add a %1$s field (Standard Fields). Set its %2$s to exactly %3$s.', 'passive-captcha-hardened'), '<strong>'.__('Hidden', 'passive-captcha-hardened').'</strong>', '<strong>'.__('Field Label', 'passive-captcha-hardened').'</strong>', '<code>CAPTCHA Token</code>'); ?></li><li><?php printf(__('Configure the settings below as needed.', 'passive-captcha-hardened')); ?></li></ol></details><hr>
         <form method="post" action="" id="pch-main-settings-form">
             <input type="hidden" name="pch_settings_nonce" value="<?php echo wp_create_nonce('pch_save_settings'); ?>">
-
-            <h2><?php _e('Behavior Settings', 'passive-captcha-hardened'); ?></h2>
-            <table class="form-table" role="presentation"><tbody>
-                <tr><th scope="row"><label for="rate_limit"><?php _e('Rate Limit Threshold', 'passive-captcha-hardened'); ?></label></th><td><input name="rate_limit" type="number" step="1" min="0" id="rate_limit" value="<?php echo esc_attr($rate_limit); ?>" class="small-text"><p class="description"><?php _e('Failed attempts from an IP before banning (0=disable).', 'passive-captcha-hardened'); ?></p></td></tr>
-                <tr><th scope="row"><label for="ban_duration"><?php _e('Ban Duration (seconds)', 'passive-captcha-hardened'); ?></label></th><td><input name="ban_duration" type="number" step="1" min="0" id="ban_duration" value="<?php echo esc_attr($ban_duration); ?>" class="regular-text"><p class="description"><?php _e('How long banned IPs are blocked (e.g., 3600 = 1 hour).', 'passive-captcha-hardened'); ?></p></td></tr>
-                <tr><th scope="row"><label for="session_lifetime"><?php _e('Session Token Lifetime (seconds)', 'passive-captcha-hardened'); ?></label></th><td><input name="session_lifetime" type="number" step="1" min="60" id="session_lifetime" value="<?php echo esc_attr($session_lifetime); ?>" class="regular-text"><p class="description"><?php _e('How long the server remembers a user session token (Default: 43200 = 12 hours). Should be >= nonce lifetime.', 'passive-captcha-hardened'); ?></p></td></tr>
-            </tbody></table>
-
-            <h2><?php _e('Validation Thresholds', 'passive-captcha-hardened'); ?></h2>
-            <table class="form-table" role="presentation"><tbody>
-                 <tr><th scope="row"><label for="min_time_threshold"><?php _e('Minimum Time Threshold (ms)', 'passive-captcha-hardened'); ?></label></th><td><input name="min_time_threshold" type="number" step="100" min="0" id="min_time_threshold" value="<?php echo esc_attr($min_time_threshold); ?>" class="small-text"><p class="description"><?php _e('Minimum time (milliseconds) user must spend on page (Default: 3000).', 'passive-captcha-hardened'); ?></p></td></tr>
-                 <tr><th scope="row"><label for="min_hash_length"><?php _e('Minimum Fingerprint Hash Length', 'passive-captcha-hardened'); ?></label></th><td><input name="min_hash_length" type="number" step="1" min="0" id="min_hash_length" value="<?php echo esc_attr($min_hash_length); ?>" class="small-text"><p class="description"><?php _e('Minimum expected length of the client-side fingerprint hash (Default: 10).', 'passive-captcha-hardened'); ?></p></td></tr>
-            </tbody></table>
-
-             <h2><?php _e('Client-Side Checks', 'passive-captcha-hardened'); ?></h2>
-             <table class="form-table" role="presentation"><tbody>
-                 <tr><th scope="row"><?php _e('Enable Checks', 'passive-captcha-hardened'); ?></th><td><fieldset><legend class="screen-reader-text"><span><?php _e('Enable Checks', 'passive-captcha-hardened'); ?></span></legend><label for="enable_webgl"><input name="enable_webgl" type="checkbox" id="enable_webgl" value="1" <?php checked($enable_webgl, true); ?>> <?php _e('Include WebGL Fingerprint in client hash', 'passive-captcha-hardened'); ?></label><br><label for="enable_math"><input name="enable_math" type="checkbox" id="enable_math" value="1" <?php checked($enable_math, true); ?>> <?php _e('Include Invisible Math Challenge in client hash', 'passive-captcha-hardened'); ?></label><p class="description"><?php _e('Disabling these reduces bot detection capability but may address privacy concerns.', 'passive-captcha-hardened'); ?></p></fieldset></td></tr>
-            </tbody></table>
-
-             <h2><?php _e('Webhook Settings', 'passive-captcha-hardened'); ?></h2>
-             <table class="form-table" role="presentation"><tbody>
-                 <tr><th scope="row"><label for="webhook_url"><?php _e('Webhook URL', 'passive-captcha-hardened'); ?></label></th><td><input name="webhook_url" type="url" id="webhook_url" value="<?php echo esc_attr($webhook_url); ?>" class="large-text" placeholder="https://your-webhook-receiver.com/endpoint"><p class="description"><?php _e('URL to send failure notifications (POST JSON). Leave blank to disable.', 'passive-captcha-hardened'); ?></p></td></tr>
-                 <tr><th scope="row"><label for="hmac_key"><?php _e('Webhook HMAC Key', 'passive-captcha-hardened'); ?></label></th><td><input name="hmac_key" type="text" id="hmac_key" value="<?php echo esc_attr($hmac_key); ?>" class="regular-text"><p class="description"><?php _e('Secret key to sign webhook payloads (SHA256 HMAC). Required if URL is set.', 'passive-captcha-hardened'); ?></p></td></tr>
-             </tbody></table>
-
-             <h2><?php _e('IP Address Management', 'passive-captcha-hardened'); ?></h2>
-             <table class="form-table" role="presentation"><tbody>
-                 <tr><th scope="row"><label for="custom_ip_header"><?php _e('Custom IP Header (Advanced)', 'passive-captcha-hardened'); ?></label></th><td><input name="custom_ip_header" type="text" id="custom_ip_header" value="<?php echo esc_attr($custom_ip_header); ?>" class="regular-text" placeholder="HTTP_X_REAL_IP"><p class="description"><?php _e('Optional: Specify a server variable (e.g., HTTP_CF_CONNECTING_IP) to check first for the visitor IP. Use format seen by PHP in $_SERVER.', 'passive-captcha-hardened'); ?></p></td></tr>
-                 <tr><th scope="row"><label for="ip_whitelist"><?php _e('IP Whitelist', 'passive-captcha-hardened'); ?></label></th><td><textarea name="ip_whitelist" id="ip_whitelist" rows="5" cols="50" class="large-text" placeholder="1.2.3.4&#10;5.6.7.8"><?php echo esc_textarea($ip_whitelist); ?></textarea><p class="description"><?php _e('One IP per line. Bypasses all checks.', 'passive-captcha-hardened'); ?></p></td></tr>
-                 <tr><th scope="row"><label for="ip_blacklist"><?php _e('IP Blacklist', 'passive-captcha-hardened'); ?></label></th><td><textarea name="ip_blacklist" id="ip_blacklist" rows="5" cols="50" class="large-text" placeholder="9.8.7.6&#10;5.5.5.5"><?php echo esc_textarea($ip_blacklist); ?></textarea><p class="description"><?php _e('One IP per line. Always blocked.', 'passive-captcha-hardened'); ?></p></td></tr>
-             </tbody></table>
-
+            <h2><?php _e('Behavior Settings', 'passive-captcha-hardened'); ?></h2><table class="form-table" role="presentation"><tbody><tr><th scope="row"><label for="rate_limit"><?php _e('Rate Limit Threshold', 'passive-captcha-hardened'); ?></label></th><td><input name="rate_limit" type="number" step="1" min="0" id="rate_limit" value="<?php echo esc_attr($rate_limit); ?>" class="small-text"><p class="description"><?php _e('Failed attempts from an IP before banning (0=disable).', 'passive-captcha-hardened'); ?></p></td></tr><tr><th scope="row"><label for="ban_duration"><?php _e('Ban Duration (seconds)', 'passive-captcha-hardened'); ?></label></th><td><input name="ban_duration" type="number" step="1" min="0" id="ban_duration" value="<?php echo esc_attr($ban_duration); ?>" class="regular-text"><p class="description"><?php _e('How long banned IPs are blocked (e.g., 3600 = 1 hour).', 'passive-captcha-hardened'); ?></p></td></tr><tr><th scope="row"><label for="session_lifetime"><?php _e('Session Token Lifetime (seconds)', 'passive-captcha-hardened'); ?></label></th><td><input name="session_lifetime" type="number" step="1" min="60" id="session_lifetime" value="<?php echo esc_attr($session_lifetime); ?>" class="regular-text"><p class="description"><?php _e('How long the server remembers a user session token (Default: 43200 = 12 hours). Should be >= nonce lifetime.', 'passive-captcha-hardened'); ?></p></td></tr></tbody></table>
+            <h2><?php _e('Validation Thresholds', 'passive-captcha-hardened'); ?></h2><table class="form-table" role="presentation"><tbody><tr><th scope="row"><label for="min_time_threshold"><?php _e('Minimum Time Threshold (ms)', 'passive-captcha-hardened'); ?></label></th><td><input name="min_time_threshold" type="number" step="100" min="0" id="min_time_threshold" value="<?php echo esc_attr($min_time_threshold); ?>" class="small-text"><p class="description"><?php _e('Minimum time (milliseconds) user must spend on page (Default: 3000).', 'passive-captcha-hardened'); ?></p></td></tr><tr><th scope="row"><label for="min_hash_length"><?php _e('Minimum Fingerprint Hash Length', 'passive-captcha-hardened'); ?></label></th><td><input name="min_hash_length" type="number" step="1" min="0" id="min_hash_length" value="<?php echo esc_attr($min_hash_length); ?>" class="small-text"><p class="description"><?php _e('Minimum expected length of the client-side fingerprint hash (Default: 10).', 'passive-captcha-hardened'); ?></p></td></tr></tbody></table>
+            <h2><?php _e('Client-Side Checks', 'passive-captcha-hardened'); ?></h2><table class="form-table" role="presentation"><tbody><tr><th scope="row"><?php _e('Enable Checks', 'passive-captcha-hardened'); ?></th><td><fieldset><legend class="screen-reader-text"><span><?php _e('Enable Checks', 'passive-captcha-hardened'); ?></span></legend><label for="enable_webgl"><input name="enable_webgl" type="checkbox" id="enable_webgl" value="1" <?php checked($enable_webgl, true); ?>> <?php _e('Include WebGL Fingerprint in client hash', 'passive-captcha-hardened'); ?></label><br><label for="enable_math"><input name="enable_math" type="checkbox" id="enable_math" value="1" <?php checked($enable_math, true); ?>> <?php _e('Include Invisible Math Challenge in client hash', 'passive-captcha-hardened'); ?></label><p class="description"><?php _e('Disabling these reduces bot detection capability but may address privacy concerns.', 'passive-captcha-hardened'); ?></p></fieldset></td></tr></tbody></table>
+            <h2><?php _e('Webhook Settings', 'passive-captcha-hardened'); ?></h2><table class="form-table" role="presentation"><tbody><tr><th scope="row"><label for="webhook_url"><?php _e('Webhook URL', 'passive-captcha-hardened'); ?></label></th><td><input name="webhook_url" type="url" id="webhook_url" value="<?php echo esc_attr($webhook_url); ?>" class="large-text" placeholder="https://your-webhook-receiver.com/endpoint"><p class="description"><?php _e('URL to send failure notifications (POST JSON). Leave blank to disable.', 'passive-captcha-hardened'); ?></p></td></tr><tr><th scope="row"><label for="hmac_key"><?php _e('Webhook HMAC Key', 'passive-captcha-hardened'); ?></label></th><td><input name="hmac_key" type="text" id="hmac_key" value="<?php echo esc_attr($hmac_key); ?>" class="regular-text"><p class="description"><?php _e('Secret key to sign webhook payloads (SHA256 HMAC). Required if URL is set.', 'passive-captcha-hardened'); ?></p></td></tr></tbody></table>
+            <h2><?php _e('IP Address Management', 'passive-captcha-hardened'); ?></h2><table class="form-table" role="presentation"><tbody><tr><th scope="row"><label for="custom_ip_header"><?php _e('Custom IP Header (Advanced)', 'passive-captcha-hardened'); ?></label></th><td><input name="custom_ip_header" type="text" id="custom_ip_header" value="<?php echo esc_attr($custom_ip_header); ?>" class="regular-text" placeholder="HTTP_X_REAL_IP"><p class="description"><?php _e('Optional: Specify a server variable (e.g., HTTP_CF_CONNECTING_IP) to check first for the visitor IP. Use format seen by PHP in $_SERVER.', 'passive-captcha-hardened'); ?></p></td></tr><tr><th scope="row"><label for="ip_whitelist"><?php _e('IP Whitelist', 'passive-captcha-hardened'); ?></label></th><td><textarea name="ip_whitelist" id="ip_whitelist" rows="5" cols="50" class="large-text" placeholder="1.2.3.4&#10;5.6.7.8"><?php echo esc_textarea($ip_whitelist); ?></textarea><p class="description"><?php _e('One IP per line. Bypasses all checks.', 'passive-captcha-hardened'); ?></p></td></tr><tr><th scope="row"><label for="ip_blacklist"><?php _e('IP Blacklist', 'passive-captcha-hardened'); ?></label></th><td><textarea name="ip_blacklist" id="ip_blacklist" rows="5" cols="50" class="large-text" placeholder="9.8.7.6&#10;5.5.5.5"><?php echo esc_textarea($ip_blacklist); ?></textarea><p class="description"><?php _e('One IP per line. Always blocked.', 'passive-captcha-hardened'); ?></p></td></tr></tbody></table>
             <?php submit_button(__('Save Settings', 'passive-captcha-hardened')); ?>
-        </form> <hr style="margin-top: 30px;">
-        <h2><?php _e('Rate Limit Management', 'passive-captcha-hardened'); ?></h2>
-        <p><?php _e('Use this button to immediately clear all current rate limit bans (failure counts). Banned IPs will be able to submit again immediately.', 'passive-captcha-hardened'); ?></p>
+        </form> <hr style="margin-top: 30px;"><h2><?php _e('Rate Limit Management', 'passive-captcha-hardened'); ?></h2><p><?php _e('Use this button to immediately clear all current rate limit bans (failure counts). Banned IPs will be able to submit again immediately.', 'passive-captcha-hardened'); ?></p>
         <form method="post" action="" style="margin-top: 0;">
-            <?php // Add nonce for the clear bans action ?>
             <input type="hidden" name="pch_clear_bans_nonce" value="<?php echo wp_create_nonce('pch_clear_bans_action'); ?>">
             <?php submit_button(__('Clear All Rate Limit Bans', 'passive-captcha-hardened'), 'delete', 'pch_clear_bans', false, ['onclick' => "return confirm('" . esc_js(__('Are you sure you want to clear all current rate limit bans?', 'passive-captcha-hardened')) . "');"]); ?>
         </form>
-        <hr style="margin-top: 30px;">
-        <h2><?php _e('Recent Log Entries', 'passive-captcha-hardened'); ?></h2>
-        <p><?php _e('Shows the last 50 logged events from this plugin (failures, alerts). Check server PHP error logs for more details.', 'passive-captcha-hardened'); ?></p>
-        <div id="pch-log-display" style="margin-bottom: 15px;">
-            <textarea readonly="readonly" style="width: 100%; height: 250px; background-color: #f0f0f0; font-family: monospace; font-size: 12px; white-space: pre; overflow: auto; border: 1px solid #ccc; padding: 5px; box-sizing: border-box;"><?php
-                if (!empty($recent_logs)) {
-                    echo esc_textarea(implode("\n", $recent_logs));
-                } else {
-                    echo esc_textarea(__('No recent log entries found.', 'passive-captcha-hardened'));
-                }
-            ?></textarea>
-        </div>
-        <form method="post" action="" style="margin-top: 0;">
-            <?php // Add nonce for the clear log action ?>
-            <input type="hidden" name="pch_clear_log_nonce" value="<?php echo wp_create_nonce('pch_clear_log_action'); ?>">
-            <?php submit_button(__('Clear Recent Log Entries', 'passive-captcha-hardened'), 'delete', 'pch_clear_log', false); // Use 'delete' class for styling ?>
-        </form>
-        </div><?php
-}
 
+         <hr style="margin-top: 30px;"><h2><?php _e('Recent Log Entries', 'passive-captcha-hardened'); ?></h2><p><?php _e('Shows the last 50 logged events from this plugin (failures, alerts). Check server PHP error logs for more details.', 'passive-captcha-hardened'); ?></p>
+        <div id="pch-log-display" style="margin-bottom: 15px;"><textarea readonly="readonly" style="width: 100%; height: 250px; background-color: #f0f0f0; font-family: monospace; font-size: 12px; white-space: pre; overflow: auto; border: 1px solid #ccc; padding: 5px; box-sizing: border-box;"><?php if (!empty($recent_logs)) { echo esc_textarea(implode("\n", $recent_logs)); } else { echo esc_textarea(__('No recent log entries found.', 'passive-captcha-hardened')); } ?></textarea></div>
+        <form method="post" action="" style="margin-top: 0;">
+            <input type="hidden" name="pch_clear_log_nonce" value="<?php echo wp_create_nonce('pch_clear_log_action'); ?>">
+            <?php submit_button(__('Clear Recent Log Entries', 'passive-captcha-hardened'), 'delete', 'pch_clear_log', false); ?>
+        </form>
+
+    </div><?php
+}
 
 // --- Internationalization ---
 function pch_load_textdomain() { load_plugin_textdomain('passive-captcha-hardened', false, dirname(plugin_basename(__FILE__)) . '/languages/'); }
 add_action('plugins_loaded', 'pch_load_textdomain');
+
+/* --- Alternative Nonce Injection Method (Commented Out) --- */
+/*
+// If you prefer to inject the nonce server-side instead of via JS,
+// you can use this filter. Make sure the hidden field in Gravity Forms
+// has "Allow field to be populated dynamically" checked and the
+// Parameter Name set to "pch_form_nonce".
+// IMPORTANT: If you use this, you MUST remove the 'pch_nonce' injection
+// from the passive-captcha.js file AND remove the nonce check from
+// pch_validate_passive_captcha() as it's handled differently.
+// This is generally NOT recommended with the current JS approach.
+
+add_filter( 'gform_field_value_pch_form_nonce', 'pch_inject_nonce_via_filter' );
+function pch_inject_nonce_via_filter( $value ) {
+    // Use a different nonce action name if using this method to avoid conflicts
+    // return wp_create_nonce( 'pch_captcha_form_filter_nonce' );
+    return ''; // Keep commented out by default
+}
+*/
 
 ?>
