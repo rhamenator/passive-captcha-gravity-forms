@@ -1,0 +1,14 @@
+# Dockerfile.node
+# Builds your JS asset workflow
+
+FROM node:14-alpine
+
+WORKDIR /var/www/html/js
+
+# Copy only package metadata initially, for caching
+COPY js/package.json js/package-lock.json ./
+
+RUN npm ci
+
+# Default to shell if you exec in:
+CMD ["sh"]

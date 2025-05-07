@@ -1,0 +1,37 @@
+# Dockerfile.phpunit
+# Provides a CLI container to install WP tests & run PHPUnit
+
+FROM php:8.1-cli
+
+# Install system deps for WP-CLI, Composer, MySQL client, zip
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    git unzip libzip-dev libxml2-dev default-mysql-client \
+ && docker-php-ext-install zip \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install WP-CLI
+RUN curl -sSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+    -o /usr/local/bin/wp \
+ && chmod +x /usr/local/bin/wp
+
+# Install Composer
+RUN curl -sSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+WORKDIR /var/www/html
+
+# Copy /bin scripts (e.g., install-wp-tests.sh)
+COPY bin /usr/local/bin
+RUN chmod +x /usr/local/bin/install-wp-tests.sh
+
+# Install PHP dev dependencies
+COPY composer.json composer.lock ./
+RUN composer install --no-scripts --no-autoloader
+
+# Bring in PHPUnit via Composer or global
+RUN composer global require phpunit/phpunit
+
+ENV PATH="${PATH}:/root/.composer/vendor/bin"
+
+# Default to bash so Makefile can invoke `bash -lc "…"`
+CMD ["bash"]

@@ -4,4 +4,6 @@
     <rule ref="WordPress"/>
     <exclude-pattern>tests/*</exclude-pattern>
     <exclude-pattern>vendor/*</exclude-pattern>
+    <file>./</file>
+    <exclude-pattern>dev-only/tests/*</exclude-pattern>
 </ruleset>

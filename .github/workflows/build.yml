@@ -1,0 +1,35 @@
+# .github/workflows/build.yml
+
+# Uncomment when you want CI on push / PR:
+# on:
+#   push:
+#     branches:
+#       - main
+#   pull_request:
+#     branches:
+#       - main
+
+on:
+    workflow_dispatch:
+  
+  jobs:
+    build-and-test:
+      name: Build Docker images & run tests
+      runs-on: ubuntu-latest
+  
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v3
+  
+        - name: Build Docker containers
+          # Relies on your Makefile's `build:` target (docker-compose build)
+          run: make build
+  
+        - name: Run test suite
+          # This runs `make test`, which in turn invokes phpunit in a container
+          run: make test
+  
+        - name: Teardown any running containers
+          if: always()
+          run: make down
+  

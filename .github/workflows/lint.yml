@@ -1,38 +1,37 @@
-name: PHP Linting (PHPCS)
+name: Lint
 
 on:
-  workflow_dispatch: # Allows manual triggering of the workflow from the GitHub UI
-  # Temporarily disabled: Comment out the 'on' section to prevent automatic runs
-  # push:
-  #   branches:
-  #     - main
-  #     - master
-  # pull_request:
-  #   branches:
-  #     - '*'
+  workflow_dispatch:
 
 jobs:
-  phpcs:
+  lint:
+    name: PHP & JS Lint
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.1'
-          tools: phpcs
+          php-version: 8.1
+          tools: composer
 
-      - name: Install WordPress Coding Standards
-        run: |
-          composer global require "squizlabs/php_codesniffer=*"
-          composer global require wp-coding-standards/wpcs
-          phpcs --config-set installed_paths ~/.composer/vendor/wp-coding-standards/wpcs
-          phpcs --config-set default_standard WordPress
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist
 
-          - name: Run PHPCS with custom config
-          run: |
-            ~/.composer/vendor/bin/phpcs --standard=phpcs.xml.dist .
-  
+      - name: Run PHPCS
+        run: composer run-script phpcs
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 14
+          cache: 'npm'
+
+      - name: Install JS deps
+        run: npm --prefix js ci
+
+      - name: Run ESLint
+        run: npm --prefix js run lint

@@ -1,63 +1,31 @@
-name: Passive CAPTCHA Plugin Tests
+name: Test
 
 on:
-  workflow_dispatch: # Allows manual triggering of the workflow from the GitHub UI
-  # Temporarily disabled: Comment out the 'on' section to prevent automatic runs
-  # push:
-  #   branches:
-  #     - main
-  #     - master
-  # pull_request:
-  #   branches:
-  #     - '*'
+  workflow_dispatch:
 
 jobs:
-  test:
+  phpunit:
+    name: PHPUnit via docker-compose
     runs-on: ubuntu-latest
-    services:
-      mysql:
-        image: mariadb:10.5
-        env:
-          MYSQL_DATABASE: wordpress_test
-          MYSQL_USER: wp_test
-          MYSQL_PASSWORD: password
-          MYSQL_ROOT_PASSWORD: rootpassword
-        ports:
-          - 3306:3306
-        options: --health-cmd="mysqladmin ping --silent" --health-interval=10s --health-timeout=5s --health-retries=5
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker containers
+      - name: Install docker-compose
         run: |
-          docker compose build
-          docker compose version
+          sudo apt-get update
+          sudo apt-get install -y docker-compose
 
-      - name: Start WordPress and DB containers
+      - name: Build all images
+        run: make build
+
+      - name: Start WordPress & DB
         run: docker-compose up -d wordpress db
 
-      - name: Wait for MySQL to be ready
-        run: |
-          for i in {1..30}; do
-            docker-compose exec -T db mysqladmin ping -p'password' && break
-            echo "Waiting for DB..."
-            sleep 2
-          done
-
-      - name: Install WordPress test library
-        run: make install-tests
-
-      - name: Reset DB and activate plugin
-        run: make db-reset activate-plugin
-
-      - name: Run PHPUnit tests
+      - name: Run tests
         run: make test
 
-      - name: Shut down containers
+      - name: Tear down
         if: always()
-        run: docker compose down
+        run: docker-compose down

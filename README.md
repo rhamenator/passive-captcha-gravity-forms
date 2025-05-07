@@ -1,66 +1,97 @@
-# Passive CAPTCHA Hardened for Gravity Forms (Managed Hosting Ready)
+# **Passive CAPTCHA for Gravity Forms**
 
-**Version:** 3.2
-**Author:** Your Name
-**Requires at least:** 5.0 (Assumed based on modern WP functions used)
-**Tested up to:** (Specify latest tested WP version)
-**License:** GPLv2 or later
-**License URI:** <https://www.gnu.org/licenses/gpl-2.0.html>
+A lightweight, passive CAPTCHA solution for Gravity Forms that transparently protects your forms against bots by analyzing user interactions and environmental characteristics.
 
-Configurable, passive, non-interactive CAPTCHA protection designed specifically for Gravity Forms. Blocks bot submissions without user interaction using multiple layers of checks, including improved support for managed hosting environments.
+## **Features**
 
-## Features
+* **Passive Bot Detection** – No visible challenges; uses timing, interaction, WebGL fingerprinting, and invisible math to distinguish humans from bots.
 
-* **Passive Validation:** No visible challenge for users.
-* **Client-Side Checks:** Analyzes timing, user interaction, headless browser signatures, navigator properties. Optionally includes WebGL fingerprinting and an invisible math challenge (configurable).
-* **Server-Side Checks:** Verifies WordPress nonces, session tokens (configurable lifetime), and IP/User-Agent consistency. Uses configurable thresholds for timing and fingerprint hash length.
-* **Robust IP Detection:** Attempts to identify the real visitor IP behind reverse proxies/CDNs (checks standard headers + optional custom header).
-* **Conditional JA3 Check:** Validates TLS fingerprint via `HTTP_X_JA3_FINGERPRINT` header *only if* provided by the webserver (skipped otherwise).
-* **Rate Limiting:** Temporarily blocks IPs after configurable repeated validation failures.
-* **IP Whitelisting/Blacklisting:** Allows specific IPs to bypass checks or be blocked outright.
-* **Webhook Notifications:** Sends alerts (with optional HMAC signature) on validation failures or submissions from banned IPs.
-* **Multisite Compatible:** Settings are managed network-wide.
-* **Improved Logging:** Logs specific failure reasons to the PHP error log.
-* **User-Friendly Errors:** Displays generic error messages to users upon failure.
+* **JA3 Integration** – Optionally leverage server‑side JA3 TLS fingerprints via nginx or other proxies.
 
-## Installation
+* **Flexible Thresholds** – Configure rate limits, ban durations, session lifetimes, and minimum interaction times.
 
-1. **Download:** Obtain the plugin zip file or directory (`passive-captcha-hardened`).
-2. **Upload:** Via WordPress Admin (Plugins -> Add New -> Upload) or SFTP/FTP (`/wp-content/plugins/`).
-3. **Activate:**
-    * **Single Site:** Activate via Plugins -> Installed Plugins.
-    * **Multisite:** Network Activate via Network Admin -> Plugins.
+* **Customizable Checks** – Enable or disable WebGL fingerprinting and invisible math challenges for privacy compliance.
 
-## Configuration
+* **Webhook Alerts** – Receive JSON‑formatted POST notifications on validation failures or post‑ban submissions.
 
-1. **Add Hidden Field to Gravity Forms:**
-    * Edit the target Gravity Form.
-    * Add a **Hidden** field (Standard Fields).
-    * Set its **Field Label** to exactly: `CAPTCHA Token`.
-    * Save the form.
+* **IP Management** – Whitelist and blacklist specific IPs; specify custom IP headers (e.g., `HTTP_CF_CONNECTING_IP`).
 
-2. **Configure Plugin Settings:**
-    * Navigate to **Settings -> Passive CAPTCHA** (found under Network Admin -> Settings on multisite).
-    * Adjust the following settings:
-        * **Behavior:** Rate Limit Threshold, Ban Duration, Session Token Lifetime.
-        * **Validation Thresholds:** Minimum Time (ms), Minimum Fingerprint Hash Length.
-        * **Client-Side Checks:** Enable/disable WebGL Fingerprint and Invisible Math Challenge inclusion in the client hash.
-        * **Webhook:** URL and HMAC Key for failure notifications.
-        * **IP Management:** Optional Custom IP Header (for proxy environments), IP Whitelist, IP Blacklist.
-    * Save Changes.
+* **Detailed Logging** – Records all validation events to a dedicated log file with fallback to DB logging if file access is restricted.
 
-## Usage
+* **Settings UI** – Full-featured admin page under **Settings → Passive CAPTCHA**.
 
-Once installed, activated, configured, and the hidden field is added, protection is automatic for the selected Gravity Form(s).
+* **Easy Integration** – Automatically enqueues ES‑module bundles (index.js \+ feature modules) and injects necessary hidden fields.
 
-## Optional Advanced Setup
+* **Graceful Fallbacks** – Warns admins if `footer.php` is missing or scripts fail to load; attempts alternative injection points.
 
-### JA3 TLS Fingerprinting
+## **Installation**
 
-* Requires server-level configuration (e.g., NGINX+Lua) to capture the JA3 fingerprint and pass it via the `X-JA3_FINGERPRINT` HTTP header.
-* The plugin will automatically use this header for validation *if it is present*.
+1. Upload the `passive-captcha-gravity-forms` folder to your `/wp-content/plugins/` directory.
 
-## For Developers: Running Tests
+2. Activate **Passive CAPTCHA** from the **Plugins** menu in WordPress.
 
-* Includes PHPUnit tests (`tests/` directory).
-* Requires a WordPress test environment setup (manual or Docker). See `phpunit.xml` and `tests/bootstrap.php`. Docker setup files (`Dockerfile`, `docker-compose.yml`, `Makefile`) are included for containerized testing.
+3. Under **Settings → Passive CAPTCHA**, configure your preferred options and save.
+
+4. Edit your Gravity Form, add a **Hidden** field, and set the **Field Label** to `CAPTCHA Token`.
+
+**Note:** The plugin attempts to inject its script after the theme’s `wp_footer()`; ensure your theme includes `footer.php` and calls `wp_footer()`.
+
+## **Folder Structure**
+
+passive-captcha-gravity-forms/  
+├── js/  
+│   ├── index.js  
+│   ├── debug-logger.js  
+│   ├── fingerprint.js  
+│   ├── ja3Integration.js  
+│   ├── logger.js  
+│   ├── mathChallenge.js  
+│   ├── session.js  
+│   └── token-handler.js  
+├── includes/  
+│   └── settings-page.php  
+├── dev-only/  
+│   ├── Dockerfile.node  
+│   ├── Dockerfile.phpunit  
+│   ├── docker-compose.yml  
+│   ├── lint.yml  
+│   ├── test.yml  
+│   └── nginx.conf  
+├── tests/  
+│   └── tests-passive-captcha.php  
+├── architecture.md  
+├── flowchart.md  
+├── sequence.md  
+├── Dockerfile (in recycle bin)  
+├── Makefile  
+├── phpunit.xml  
+├── phpcs.xml.dist  
+├── README.md  
+├── readme.txt  
+├── sequence.md  
+└── passive-captcha.php
+
+## **Usage**
+
+1. Fill out the settings to control rate limits, time thresholds, and feature toggles.
+
+2. Place a hidden field labeled `CAPTCHA Token` in any Gravity Form to automatically enable passive CAPTCHA on that form.
+
+3. Monitor the **Recent Log Entries** on the settings page or check `wp-content/uploads/pch-logs.log` for detailed debug output.
+
+## **Development & Testing**
+
+* **Build**: `make build`
+
+* **Lint**: `make lint`
+
+* **Test**: `make test`
+
+* **Docker Compose** (dev): `docker-compose -f dev-only/docker-compose.yml up`
+
+Refer to `dev-only/` for CI workflows, Docker configurations, and Nginx hardening guidelines.
+
+## **License**
+
+GPL v2 or later. See `LICENSE` for details.
+

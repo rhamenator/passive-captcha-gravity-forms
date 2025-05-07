@@ -1,46 +1,50 @@
-# Makefile for Passive CAPTCHA Hardened Plugin Docker Testing Environment
+# Makefile for Passive CAPTCHA Plugin
 
-PLUGIN_DIR=passive-captcha-hardened
-CONTAINER_PHPUNIT=phpunit
-CONTAINER_WORDPRESS=wordpress
-CONTAINER_DB=db
+.DEFAULT_GOAL := help
+
+PHPUNIT = docker-compose run --rm phpunit
+DC       = docker-compose
+
+help:
+	@echo "Usage:"
+	@echo "  make build             Build all Docker images"
+	@echo "  make up                Start WordPress & DB (nginx+PHP can come up too)"
+	@echo "  make down              Stop & remove containers"
+	@echo "  make logs              Tail logs for all services"
+	@echo "  make install-tests     Bootstrap WP PHPUnit tests"
+	@echo "  make db-reset          Reset the test database"
+	@echo "  make activate-plugin   Activate plugin in test site"
+	@echo "  make test              Run PHPUnit tests"
+	@echo "  make lint              Run PHP & JS linters"
 
 build:
-	docker-compose build
+	$(DC) build
 
 up:
-	docker-compose up -d
+	$(DC) up -d nginx wordpress db
 
 down:
-	docker-compose down
+	$(DC) down
 
 logs:
-	docker-compose logs -f
-
-db-reset:
-	docker-compose run --rm $(CONTAINER_PHPUNIT) bash -c "\
-		wp db reset --yes && \
-		wp core install --url='http://localhost:8080' --title='Passive CAPTCHA Test' --admin_user='admin' --admin_password='password' --admin_email='admin@example.com'"
-
-activate-plugin:
-	docker-compose run --rm $(CONTAINER_PHPUNIT) bash -c "\
-		wp plugin activate $(PLUGIN_DIR)"
+	$(DC) logs -f
 
 install-tests:
-	docker-compose run --rm $(CONTAINER_PHPUNIT) bash -c "\
-		if [ ! -d /tmp/wordpress ]; then \
-			git clone https://github.com/WordPress/wordpress-develop.git /tmp/wordpress; \
-			cd /tmp/wordpress; \
-			npm install; \
-			npm run build; \
-			cp wp-tests-config-sample.php wp-tests-config.php; \
-			sed -i \"s/youremptytestdbnamehere/wordpress_test/\" wp-tests-config.php; \
-			sed -i \"s/yourusernamehere/wp_test/\" wp-tests-config.php; \
-			sed -i \"s/yourpasswordhere/password/\" wp-tests-config.php; \
-			sed -i \"s/localhost/db/\" wp-tests-config.php; \
-		fi"
+	$(PHPUNIT) bash bin/install-wp-tests.sh wordpress_test wp_test password db
 
-test:
-	docker-compose run --rm $(CONTAINER_PHPUNIT) phpunit
+db-reset:
+	@echo ">>> Dropping & recreating wordpress_test database"
+	docker-compose exec db \
+	  mysql -uroot -prootpassword -e "DROP DATABASE IF EXISTS wordpress_test; CREATE DATABASE wordpress_test;"
 
-test-reset: down up install-tests db-reset activate-plugin test
+activate-plugin:
+	$(PHPUNIT) bash -lc "wp plugin activate passive-captcha"
+
+test: install-tests db-reset activate-plugin
+	$(PHPUNIT) bash -lc "vendor/bin/phpunit --configuration phpunit.xml"
+
+lint:
+	@echo ">>> PHP lint (PHPCS)..."
+	composer run-script phpcs
+	@echo ">>> JS lint (ESLint)..."
+	npm --prefix js run lint

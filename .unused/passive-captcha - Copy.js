@@ -157,59 +157,92 @@ function initializeCaptchaForForm(formId, currentPage) {
   // --- Hash Building ---
   function buildNavigatorHash() { const data = [ navigator.userAgent, navigator.language, navigator.languages ? navigator.languages.join(',') : '', navigator.platform, getWebGLFingerprint(), invisibleMathChallenge() ].join('|'); return btoa(data); }
 
-  // --- Token Generation and Field Update ---
-  console.log(`PCH DEBUG: Setting inner timeout for token generation (${minTimeMs}ms).`);
-  setTimeout(() => {
-     try {
-          console.log('PCH DEBUG: Inner timeout executed for token generation.');
+// --- Token Generation and Field Update ---
+console.log(`PCH DEBUG: Setting inner timeout for token generation (${minTimeMs}ms).`);
+setTimeout(() => {
+   try {
+        console.log('PCH DEBUG: Inner timeout executed for token generation.');
 
-          const headlessCheck = isHeadless();
-          const missingPropsCheck = hasMissingNavigatorProps();
-          // Check the global interaction flag set by the document listeners
-          interacted = window.pchUserInteracted || false;
-          let finalTokenValue = 'no_interaction'; // Default value if checks fail
+        // --- START: Nonce Debug Alert 1 ---
+        alert(`PCH DEBUG (JS - Step 1):\nNonce received from server (pchData.nonce):\n${pchData.nonce}`);
+        // --- END: Nonce Debug Alert 1 ---
 
-          if (!interacted || headlessCheck || missingPropsCheck) {
-              console.log(`PCH DEBUG: Bot signal or no interaction. interacted=${interacted}, headless=${headlessCheck}, missingProps=${missingPropsCheck}.`);
-          } else {
-              const timeSpent = Date.now() - startTime; // Time since this function was called (gform_post_render)
-              console.log(`PCH DEBUG: Time spent since form render init: ${timeSpent}ms.`);
+        const headlessCheck = isHeadless();
+        const missingPropsCheck = hasMissingNavigatorProps();
+        // Check the global interaction flag set by the document listeners
+        interacted = window.pchUserInteracted || false;
+        let finalTokenValue = 'no_interaction'; // Default value if checks fail
 
-              if (timeSpent < minTimeMs) { // Check time spent since form render/init
-                   console.log(`PCH DEBUG: Interaction too fast (${timeSpent}ms < ${minTimeMs}ms).`);
-              } else {
-                  const navHash = buildNavigatorHash();
-                  // Use time since page load for the actual token value if needed,
-                  // but timeSpent since render is a decent interaction check too.
-                  // Let's stick with timeSpent since render for simplicity here.
-                  finalTokenValue = btoa(timeSpent.toString() + ':' + navHash);
-                  console.log('PCH DEBUG: Token generated:', finalTokenValue);
+        if (!interacted || headlessCheck || missingPropsCheck) {
+            console.log(`PCH DEBUG: Bot signal or no interaction. interacted=${interacted}, headless=${headlessCheck}, missingProps=${missingPropsCheck}.`);
+        } else {
+            const timeSpent = Date.now() - startTime; // Time since this function was called (gform_post_render)
+            console.log(`PCH DEBUG: Time spent since form render init: ${timeSpent}ms.`);
 
-                  // Inject helper fields only if a valid token was generated
-                  const form = field.closest('form');
-                  if (form) {
-                      console.log('PCH DEBUG: Parent form found:', form);
-                      // Inject fields if they don't exist
-                      if (!form.querySelector('input[name="pch_nonce"]')) { form.insertAdjacentHTML('beforeend', `<input type="hidden" name="pch_nonce" value="${pchData.nonce}">`); console.log('PCH DEBUG: Nonce field injected.'); } else { /* Update existing? */ const existingNonce = form.querySelector('input[name="pch_nonce"]'); if(existingNonce.value !== pchData.nonce) { existingNonce.value = pchData.nonce; console.log('PCH DEBUG: Nonce field updated.');} else {console.log('PCH DEBUG: Nonce field already exists with correct value.');} }
-                      if (!form.querySelector('input[name="pch_session"]')) { form.insertAdjacentHTML('beforeend', `<input type="hidden" name="pch_session" value="${pchData.sessionToken}">`); console.log('PCH DEBUG: Session field injected.'); } else { /* Update existing? */ const existingSession = form.querySelector('input[name="pch_session"]'); if(existingSession.value !== pchData.sessionToken) { existingSession.value = pchData.sessionToken; console.log('PCH DEBUG: Session field updated.');} else { console.log('PCH DEBUG: Session field already exists.');} }
-                      if (!form.querySelector('input[name="pch_iphash"]')) { form.insertAdjacentHTML('beforeend', `<input type="hidden" name="pch_iphash" value="${pchData.ipHash}">`); console.log('PCH DEBUG: IPhash field injected.'); } else { console.log('PCH DEBUG: IPhash field already exists.'); }
-                      console.log('PCH DEBUG: Field injection check complete.');
-                  } else {
-                      console.warn('PCH DEBUG: CAPTCHA field is not inside a <form> element...');
-                  }
-              }
-          }
+            if (timeSpent < minTimeMs) { // Check time spent since form render/init
+                 console.log(`PCH DEBUG: Interaction too fast (${timeSpent}ms < ${minTimeMs}ms).`);
+            } else {
+                const navHash = buildNavigatorHash();
+                // Use time since page load for the actual token value if needed,
+                // but timeSpent since render is a decent interaction check too.
+                // Let's stick with timeSpent since render for simplicity here.
+                finalTokenValue = btoa(timeSpent.toString() + ':' + navHash);
+                console.log('PCH DEBUG: Token generated:', finalTokenValue);
 
-          // Update fields
-          field.value = finalTokenValue;
-          console.log('PCH DEBUG: Set hidden field (', field.name, ') value to:', finalTokenValue);
-          if (debugField) {
-              debugField.value = finalTokenValue;
-              console.log('PCH DEBUG: Set visible debug field (', debugField.name, ') value to:', finalTokenValue);
-          }
-      } catch (e) {
-          console.error('PCH ERROR: Error inside inner setTimeout callback:', e);
-      }
-  }, minTimeMs); // Delay token generation by minTimeMs
+                // Inject helper fields only if a valid token was generated
+                const form = field.closest('form');
+                if (form) {
+                    console.log('PCH DEBUG: Parent form found:', form);
+
+                    // --- START: Nonce Debug Alert 2 ---
+                    alert(`PCH DEBUG (JS - Step 2):\nValue we are TRYING to inject for pch_nonce:\n${pchData.nonce}`);
+                    // --- END: Nonce Debug Alert 2 ---
+
+                    // Inject fields if they don't exist
+                    let nonceField;
+                    if (!form.querySelector('input[name="pch_nonce"]')) {
+                         form.insertAdjacentHTML('beforeend', `<input type="hidden" name="pch_nonce" value="${pchData.nonce}">`);
+                         console.log('PCH DEBUG: Nonce field injected.');
+                         nonceField = form.querySelector('input[name="pch_nonce"]'); // Get reference after injection
+                    } else {
+                         nonceField = form.querySelector('input[name="pch_nonce"]'); // Get reference to existing
+                         if(nonceField.value !== pchData.nonce) {
+                              nonceField.value = pchData.nonce;
+                              console.log('PCH DEBUG: Nonce field updated.');
+                         } else {
+                              console.log('PCH DEBUG: Nonce field already exists with correct value.');
+                         }
+                    }
+
+                    // --- START: Nonce Debug Alert 3 ---
+                    if (nonceField) {
+                      alert(`PCH DEBUG (JS - Step 3):\nValue ACTUALLY injected/present in input[name="pch_nonce"]:\n${nonceField.value}`);
+                    } else {
+                      alert(`PCH DEBUG (JS - Step 3):\nCould not find input[name="pch_nonce"] after injection attempt.`);
+                    }
+                    // --- END: Nonce Debug Alert 3 ---
+
+
+                    if (!form.querySelector('input[name="pch_session"]')) { form.insertAdjacentHTML('beforeend', `<input type="hidden" name="pch_session" value="${pchData.sessionToken}">`); console.log('PCH DEBUG: Session field injected.'); } else { /* Update existing? */ const existingSession = form.querySelector('input[name="pch_session"]'); if(existingSession.value !== pchData.sessionToken) { existingSession.value = pchData.sessionToken; console.log('PCH DEBUG: Session field updated.');} else { console.log('PCH DEBUG: Session field already exists.');} }
+                    if (!form.querySelector('input[name="pch_iphash"]')) { form.insertAdjacentHTML('beforeend', `<input type="hidden" name="pch_iphash" value="${pchData.ipHash}">`); console.log('PCH DEBUG: IPhash field injected.'); } else { console.log('PCH DEBUG: IPhash field already exists.'); }
+                    console.log('PCH DEBUG: Field injection check complete.');
+                } else {
+                    console.warn('PCH DEBUG: CAPTCHA field is not inside a <form> element...');
+                }
+            }
+        }
+
+        // Update fields
+        field.value = finalTokenValue;
+        console.log('PCH DEBUG: Set hidden field (', field.name, ') value to:', finalTokenValue);
+        if (debugField) {
+            debugField.value = finalTokenValue;
+            console.log('PCH DEBUG: Set visible debug field (', debugField.name, ') value to:', finalTokenValue);
+        }
+    } catch (e) {
+        console.error('PCH ERROR: Error inside inner setTimeout callback:', e);
+        alert(`PCH ERROR:\nAn error occurred in the JS timeout:\n${e.message}`); // Optional alert on error
+    }
+}, minTimeMs); // Delay token generation by minTimeMs
 
 } // End initializeCaptchaForForm function
