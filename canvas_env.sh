@@ -1,0 +1,5 @@
+export PATH="C:/GTK/bin:$PATH"
+export PKG_CONFIG_PATH="C:/GTK/lib/pkgconfig"
+export CPPFLAGS="-I/C/GTK/include"
+export LDFLAGS="-L/C/GTK/lib"
+export C_INCLUDE_PATH="C:/GTK/include"

@@ -1,19 +1,48 @@
-import { generateChallenge, validateAnswer } from '../js/mathChallenge';
+import { Logger } from '../js/logger.js';
 
-test('generates a math challenge', () => {
-  const challenge = generateChallenge();
-  expect(challenge).toHaveProperty('question');
-  expect(challenge).toHaveProperty('answer');
-  expect(typeof challenge.question).toBe('string');
-  expect(typeof challenge.answer).toBe('number');
-});
+// Mock console methods
+console.log = jest.fn();
+console.warn = jest.fn();
+console.error = jest.fn();
 
-test('validates correct answer', () => {
-  const challenge = generateChallenge();
-  expect(validateAnswer(challenge.answer, challenge)).toBe(true);
-});
+describe('Logger Module', () => {
+  let logger;
 
-test('rejects incorrect answer', () => {
-  const challenge = generateChallenge();
-  expect(validateAnswer(challenge.answer + 1, challenge)).toBe(false);
+  beforeEach(() => {
+    logger = new Logger();
+    jest.clearAllMocks();
+  });
+
+  test('should log messages correctly', () => {
+    logger.log('This is a log message');
+    expect(console.log).toHaveBeenCalledWith('[Logger]', 'This is a log message');
+  });
+
+  test('should log warnings correctly', () => {
+    logger.warn('This is a warning message');
+    expect(console.warn).toHaveBeenCalledWith('[Logger]', 'This is a warning message');
+  });
+
+  test('should log errors correctly', () => {
+    logger.error('This is an error message');
+    expect(console.error).toHaveBeenCalledWith('[Logger]', 'This is an error message');
+  });
+
+  test('should properly store log history', () => {
+    logger.log('First log');
+    logger.warn('First warning');
+    logger.error('First error');
+
+    expect(logger.history).toEqual([
+      { level: 'log', message: 'First log' },
+      { level: 'warn', message: 'First warning' },
+      { level: 'error', message: 'First error' }
+    ]);
+  });
+
+  test('should clear logs correctly', () => {
+    logger.log('Log to clear');
+    logger.clear();
+    expect(logger.history).toEqual([]);
+  });
 });
