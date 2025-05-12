@@ -1,14 +1,14 @@
-# Dockerfile.node
-# Builds your JS asset workflow
-
-FROM node:14-alpine
+FROM node:20-slim
 
 WORKDIR /var/www/html/js
 
-# Copy only package metadata initially, for caching
-COPY js/package.json js/package-lock.json ./
+# ✅ Install required dependencies for node-gyp
+RUN apt-get update && apt-get install -y python3 build-essential libglib2.0-dev && rm -rf /var/lib/apt/lists/*
 
-RUN npm ci
+# ✅ Copy package files before installing dependencies
+COPY package.json ./
+COPY package-lock.json ./
 
-# Default to shell if you exec in:
-CMD ["sh"]
+RUN npm install
+
+CMD ["npm", "test"]

@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Passive CAPTCHA Test</title>
-    <script type="module" src="./js/index.js"></script>
+    <!-- <script type="module" src="../js/index.js"></script> --> <!-- Temporarily disabled for debugging -->
 </head>
 <body>
     <form id="testForm">
-        <input type="hidden" name="captcha_token">
+        <input type="hidden" name="captcha_token" autocomplete="off">
         <button type="submit">Submit</button>
     </form>
 </body>
@@ -18,19 +18,54 @@
         const form = document.getElementById('testForm');
         const tokenInput = form.querySelector('input[name="captcha_token"]');
 
-        // Simulate a CAPTCHA token generation
         function generateToken() {
-            return Math.random().toString(36).substring(2, 15);
+            const newToken = Math.random().toString(36).substring(2, 15);
+            console.log("Generated CAPTCHA token:", newToken);
+            return newToken;
         }
 
-        // Set the token value
-        tokenInput.value = generateToken();
+        if (!tokenInput) {
+            console.error("CAPTCHA input field missing! Make sure test.html includes the hidden input.");
+            return;
+        }
 
-        // Handle form submission
+        tokenInput.value = generateToken();
+        console.log("Token set in hidden input field:", tokenInput.value);
+
+        // ✅ Debug log: Check initial token value on page load
+        console.log("Hidden input initial value:", tokenInput.value);
+
+        // ✅ Track any token modifications
+        tokenInput.addEventListener('input', () => {
+            console.warn("CAPTCHA token was modified! Current value:", tokenInput.value);
+        });
+
         form.addEventListener('submit', (event) => {
             event.preventDefault();
-            console.log('Form submitted with token:', tokenInput.value);
-            // Here you would typically send the form data to your server
+
+            // ✅ Log token before submission
+            console.log("Token just before submission:", tokenInput.value);
+
+            // ✅ Log all form data being sent
+            const formData = new FormData(form);
+            console.log("Captured Form Data:", Object.fromEntries(formData.entries()));
+
+            // ✅ Temporarily disable validation check
+            // if (!tokenInput.value || tokenInput.value.length < 10) {
+            //     console.error("CAPTCHA token was modified or is invalid!");
+            //     alert("CAPTCHA validation failed. Please refresh the page.");
+            //     return;
+            // }
+
+            // ✅ Send form data to a test endpoint for debugging (replace with actual backend)
+            fetch('/test-endpoint', {
+                method: 'POST',
+                body: formData
+            }).then(response => response.json())
+            .then(data => console.log("Server Response:", data))
+            .catch(error => console.error("Error submitting form:", error));
+
+            console.log("Form submitted with token:", tokenInput.value);
         });
     });
 </script>
