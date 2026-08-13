@@ -1,7 +1,7 @@
 # Dockerfile.phpunit
 # Provides a CLI container to install WP tests & run PHPUnit
 
-FROM php:8.1-cli
+FROM php:8.5-cli
 
 # Install system deps for WP-CLI, Composer, MySQL client, zip
 RUN apt-get update \
