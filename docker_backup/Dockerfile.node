@@ -1,7 +1,7 @@
 # Dockerfile.node
 # Builds your JS asset workflow
 
-FROM node:14-alpine
+FROM node:26-alpine
 
 WORKDIR /var/www/html/js
 
