@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
 
       - name: Build Docker containers
         # Relies on your Makefile's `build:` target (docker-compose build)
