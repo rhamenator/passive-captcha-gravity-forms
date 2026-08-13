@@ -24,7 +24,7 @@ export function attachSubmitHandler(
 ) {
   const forms = document.querySelectorAll("form");
   forms.forEach((form) => {
-    form.addEventListener("submit", (e) => {
+    form.addEventListener("submit", (_e) => {
       const elapsed = Date.now() - timeLoaded;
       const payload = {
         ts: Date.now(),
@@ -46,7 +46,7 @@ export function attachClickHandler(
 ) {
   const buttons = document.querySelectorAll("button");
   buttons.forEach((button) => {
-    button.addEventListener("click", (e) => {
+    button.addEventListener("click", (_e) => {
       const elapsed = Date.now() - timeLoaded;
       const payload = {
         ts: Date.now(),
@@ -61,7 +61,7 @@ export function attachClickHandler(
 
   const links = document.querySelectorAll("a");
   links.forEach((link) => {
-    link.addEventListener("click", (e) => {
+    link.addEventListener("click", (_e) => {
       const elapsed = Date.now() - timeLoaded;
       const payload = {
         ts: Date.now(),

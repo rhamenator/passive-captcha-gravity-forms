@@ -18,3 +18,28 @@ export function logWarning(msg) {
     console.warn('PCH WARN: Failed to log warning to server.');
   });
 }
+
+export class Logger {
+  constructor() {
+    this.history = [];
+  }
+
+  log(message) {
+    this.history.push({ level: 'log', message });
+    console.log('[Logger]', message);
+  }
+
+  warn(message) {
+    this.history.push({ level: 'warn', message });
+    console.warn('[Logger]', message);
+  }
+
+  error(message) {
+    this.history.push({ level: 'error', message });
+    console.error('[Logger]', message);
+  }
+
+  clear() {
+    this.history = [];
+  }
+}

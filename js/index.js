@@ -2,11 +2,13 @@ import { generateFingerprint } from './fingerprint.js';
 import { performMathChallenge } from './mathChallenge.js';
 import { logDebug, logWarning } from './logger.js';
 import { getJA3Fingerprint } from './ja3Integration.js';
+import { initializeSession } from './session.js';
 
-async function testPassiveCaptcha() {
-  logDebug('Testing Passive CAPTCHA without WordPress.');
+export async function initPassiveCaptcha() {
+  logDebug('Initializing Passive CAPTCHA.');
 
   try {
+    initializeSession();
     // Run JavaScript logic outside of WordPress
     const mathResult = performMathChallenge();
     logDebug(`Math challenge result: ${mathResult}`);
@@ -19,12 +21,16 @@ async function testPassiveCaptcha() {
       fingerprint += `-${ja3}`;
     }
 
-    const hiddenField = document.querySelector('input[name="captcha_token"]');
+    const hiddenField = document.querySelector(
+      'input[name="captcha_token"], input[name="captchaToken"]'
+    );
     if (hiddenField) {
       hiddenField.value = `${fingerprint}:${mathResult}`;
       logDebug(`Hidden CAPTCHA field populated: ${hiddenField.value}`);
     } else {
-      logWarning('Hidden CAPTCHA field not found.');
+      logWarning(
+        'Hidden CAPTCHA field not found. Make sure a Hidden field labeled "CAPTCHA Token" or name="captcha_token" exists.'
+      );
     }
   } catch (err) {
     logWarning(`Initialization error: ${err.message}`);
@@ -32,7 +38,7 @@ async function testPassiveCaptcha() {
 }
 
 // Run test logic outside of WordPress
-document.addEventListener('DOMContentLoaded', testPassiveCaptcha);
+document.addEventListener('DOMContentLoaded', initPassiveCaptcha);
 // This function is called when the DOM is fully loaded
 // and the script is executed in a non-WordPress context 
 // (e.g., a standalone HTML page).
