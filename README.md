@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/logo.png" alt="Passive CAPTCHA for Gravity Forms logo" width="220">
+</p>
+
 # **Passive CAPTCHA for Gravity Forms**
 
 A lightweight, passive CAPTCHA solution for Gravity Forms that transparently protects your forms against bots by analyzing user interactions and environmental characteristics.
